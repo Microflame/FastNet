@@ -5,6 +5,8 @@
 #include <stdlib.h>
 
 #include <span>
+#include <string_view>
+#include <stdexcept>
 #include <cstring>
 
 #define FNET_EXIT_IF_ERROR(x)                                           \
@@ -74,7 +76,6 @@ void SendMessage(int fd, const std::span<char>& payload, std::span<char>& buffer
     size_t remains = payload.size() + sizeof(Header);
 
     while (remains) {
-        // TODO: Try sendmsg
         int num_send = send(fd, data, remains, 0);
         FNET_ASSERT(num_send > 0);
         remains -= num_send;
@@ -82,14 +83,40 @@ void SendMessage(int fd, const std::span<char>& payload, std::span<char>& buffer
     }
 }
 
+void SendMessage_sendmsg(int fd, const std::span<char>& payload) {
+    Header header = MakeHeader(payload);
+    
+    iovec msg_iov[2] = {
+        iovec{.iov_base = &header, .iov_len = sizeof(Header)},
+        iovec{.iov_base = payload.data(), .iov_len = payload.size()},
+    };
+    msghdr msg = {
+        .msg_iov = msg_iov,
+        .msg_iovlen = 2,
+    };
+    size_t& remains_in_header = msg_iov[0].iov_len;
+    size_t& remains_in_payload = msg_iov[1].iov_len;
+
+    while (remains_in_payload) {
+        int num_send = sendmsg(fd, &msg, 0);
+        FNET_ASSERT(num_send > 0);
+        if (num_send > (int) remains_in_header) {
+            num_send -= remains_in_header;
+            remains_in_header = 0;
+            remains_in_payload -= num_send;
+        }
+    }
+}
+
 std::span<char> RecvFixed(int fd, size_t size, std::span<char> buffer) {
+    size_t num_to_recv = size;
     FNET_ASSERT(size <= buffer.size());
 
     char* data = buffer.data();
-    while (size) {
+    while (num_to_recv) {
         int num_recv = 0;
-        FNET_EXIT_IF_ERROR(num_recv = recv(fd, data, size, 0));
-        size -= num_recv;
+        FNET_EXIT_IF_ERROR(num_recv = recv(fd, data, num_to_recv, 0));
+        num_to_recv -= num_recv;
         data += num_recv;
     }
     return std::span<char>(buffer.data() + size, buffer.size() - size);

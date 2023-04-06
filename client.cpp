@@ -20,7 +20,7 @@ int main(int argc, char* argv[]) {
     // std::cerr << "Connected!\n";
 
     char* MSG = "Hello server!";
-    std::span<char> message(MSG, sizeof(MSG));
-    SendMessage(server_socked_fd, message, buffer);
+    std::span<char> message(MSG, strlen(MSG));
+    SendMessage_sendmsg(server_socked_fd, message);
     return 0;
 }
