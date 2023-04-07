@@ -148,6 +148,7 @@ SockResult SendMessage_sendmsg(int fd, const std::span<char>& payload) {
         int num_send = sendmsg(fd, &msg, 0);
         FNET_ASSERT(num_send != 0);
         if (num_send == -1) {
+            FNET_EXIT_IF_ERROR(num_send);
             return {num_send_total, SockResult::BROKEN};
         }
         num_send_total += num_send;

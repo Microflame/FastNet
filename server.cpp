@@ -1,4 +1,5 @@
 #include <iostream>
+#include <vector>
 
 #include "common.hpp"
 
@@ -27,23 +28,22 @@ int main(int argc, char* argv[]) {
     FNET_EXIT_IF_ERROR(listen(server_socked_fd, 16));
 
 
-    char BUFFER[2048];
+    std::vector<char> buffer(64 * 1024 * 1024);
     while (true) {
         int client_fd = 0;
         FNET_EXIT_IF_ERROR(client_fd = accept(server_socked_fd, nullptr, nullptr));
         Defer d([&](){ FNET_EXIT_IF_ERROR(close(client_fd)); });
-        std::cout << "Client connected.\n";
+        std::cerr << "Client connected.\n";
 
         while (true) {
-            SockResult res = RecvMessage(client_fd, {BUFFER, sizeof(BUFFER)});
+            SockResult res = RecvMessage(client_fd, {buffer.data(), buffer.size()});
             if (!res) break;
-            std::string_view msg = {BUFFER, res.size};
-            std::string response = "You've sent: " + std::string(msg.substr(sizeof(Header)));
+            std::string response = "OK!\0";
             res = SendMessage_sendmsg(client_fd, {response.data(), response.size()});
             if (!res) break;
         }
 
-        std::cout << "Client disconnected.\n";
+        std::cerr << "Client disconnected.\n";
     }
 
     return 0;
