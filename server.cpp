@@ -35,10 +35,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Client connected.\n";
 
         while (true) {
-            RecvResult res = RecvMessage(client_fd, {BUFFER, sizeof(BUFFER)});
+            SockResult res = RecvMessage(client_fd, {BUFFER, sizeof(BUFFER)});
             if (!res) break;
             std::string_view msg = {BUFFER, res.size};
-            std::cout << ">>> " << msg.substr(sizeof(Header)) << "\n";
+            std::string response = "You've sent: " + std::string(msg.substr(sizeof(Header)));
+            res = SendMessage_sendmsg(client_fd, {response.data(), response.size()});
+            if (!res) break;
         }
 
         std::cout << "Client disconnected.\n";

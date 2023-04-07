@@ -21,7 +21,11 @@ int main(int argc, char* argv[]) {
     std::string line;
     while (std::getline(std::cin, line)) {
         std::span<char> message(line.data(), line.size());
-        SendMessage_sendmsg(server_socked_fd, message);
+        SockResult res = SendMessage_sendmsg(server_socked_fd, message);
+        if (!res) break;
+        res = RecvMessage(server_socked_fd, buffer);
+        if (!res) break;
+        std::cout << ">>> " << std::string_view{BUFFER + sizeof(Header), res.size - sizeof(Header)} << '\n';
     }
 
     close(server_socked_fd);
