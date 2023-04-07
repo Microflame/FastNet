@@ -198,3 +198,28 @@ SockResult RecvMessage(int fd, std::span<char> buffer) {
     total_size += res.size;
     return {total_size, res.error};
 }
+
+SockResult RecvMessage_single(int fd, std::span<char> buffer) {
+    if (buffer.size() < sizeof(Header)) {
+        return {0, SockResult::INSUFFICIENT_BUFFER};
+    }
+
+    char* data = buffer.data();
+    size_t num_read_total = 0;
+    while (num_read_total < sizeof(Header)) {
+        int num_recv = recv(fd, data + num_read_total, buffer.size() - num_read_total, 0);
+        switch (num_recv) {
+            case 0: return {num_read_total, SockResult::DISCONNECTED};
+            case -1: return {num_read_total, SockResult::BROKEN};
+        }
+        num_read_total += num_recv;
+    }
+
+    Header& header = *( (Header*) buffer.data() );
+    size_t num_to_recv = header.payload_size + header.header_size - num_read_total;
+
+    std::span<char> remains = buffer.subspan(num_read_total);
+    SockResult res = RecvFixed(fd, remains, num_to_recv);
+    num_read_total += res.size;
+    return {num_read_total, res.error};
+}

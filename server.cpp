@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Client connected.\n";
 
         while (true) {
-            SockResult res = RecvMessage(client_fd, {buffer.data(), buffer.size()});
+            SockResult res = RecvMessage_single(client_fd, {buffer.data(), buffer.size()});
             if (!res) break;
             std::string response = "OK!\0";
             res = SendMessage_sendmsg(client_fd, {response.data(), response.size()});

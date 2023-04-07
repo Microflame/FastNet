@@ -55,7 +55,7 @@ int main(int argc, char* argv[]) {
         size_t size = uni(rng);
         SockResult send_res = SendMessage_sendmsg(server_socked_fd, {buffer.data(), size});
         if (!send_res) break;
-        SockResult recv_res = RecvMessage(server_socked_fd, {buffer.data(), buffer.size()});
+        SockResult recv_res = RecvMessage_single(server_socked_fd, {buffer.data(), buffer.size()});
         if (!recv_res) break;
 
         bytes_sent += send_res.size;
