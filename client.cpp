@@ -17,10 +17,13 @@ int main(int argc, char* argv[]) {
     server_socked_addr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
 
     FNET_EXIT_IF_ERROR(connect(server_socked_fd, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
-    // std::cerr << "Connected!\n";
 
-    char* MSG = "Hello server!";
-    std::span<char> message(MSG, strlen(MSG));
-    SendMessage_sendmsg(server_socked_fd, message);
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        std::span<char> message(line.data(), line.size());
+        SendMessage_sendmsg(server_socked_fd, message);
+    }
+
+    close(server_socked_fd);
     return 0;
 }

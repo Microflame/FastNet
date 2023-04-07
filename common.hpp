@@ -26,6 +26,27 @@
         }                                                               \
     } while (0)
 
+template <typename T, typename E>
+class Result {
+public:
+    static Result MakeError(E error) {
+        return Result({}, std::move(error));
+    }
+
+    static Result MakeOk(T result) {
+        return Result(std::move(result), {});
+    }
+
+    Result(T result, E error) :
+        result_(std::move(result)),
+        error_(std::move(error)) {}
+
+    operator bool() const { return error_; }
+private:
+    T result_;
+    E error_;
+};
+
 struct Header {
     uint16_t header_size;
     uint8_t header_version;
@@ -62,7 +83,6 @@ void PrintCError(const char* file, int line) {
 in_addr_t MakeIpAddr(uint32_t b1, uint32_t b2, uint32_t b3, uint32_t b4) {
     return (b4 << 24) | (b3 << 16) | (b2 << 8) | b1;
 }
-
 
 void SendMessage(int fd, const std::span<char>& payload, std::span<char>& buffer) {
     Header header = MakeHeader(payload);
@@ -108,24 +128,52 @@ void SendMessage_sendmsg(int fd, const std::span<char>& payload) {
     }
 }
 
-std::span<char> RecvFixed(int fd, size_t size, std::span<char> buffer) {
-    size_t num_to_recv = size;
-    FNET_ASSERT(size <= buffer.size());
+struct RecvResult {
+    size_t size;
+    enum Type {
+        OK,
+        DISCONNECTED,
+        BROKEN,
+        INSUFFICIENT_BUFFER
+    } error;
+
+    operator bool() const { return error == OK; }
+};
+
+[[nodiscard]] RecvResult RecvFixed(int fd, std::span<char> buffer) {
+    size_t num_to_recv = buffer.size();
 
     char* data = buffer.data();
     while (num_to_recv) {
-        int num_recv = 0;
-        FNET_EXIT_IF_ERROR(num_recv = recv(fd, data, num_to_recv, 0));
+        int num_recv = recv(fd, data, num_to_recv, 0);
+        switch (num_recv) {
+            case 0: return {buffer.size() - num_to_recv, RecvResult::DISCONNECTED};
+            case -1: return {buffer.size() - num_to_recv, RecvResult::BROKEN};
+        }
         num_to_recv -= num_recv;
         data += num_recv;
     }
-    return std::span<char>(buffer.data() + size, buffer.size() - size);
+    return {buffer.size(), RecvResult::OK};
 }
 
-std::string_view RecvMessage(int fd, std::span<char> buffer) {
-    std::span<char> remains = RecvFixed(fd, sizeof(Header), buffer);
+[[nodiscard]] RecvResult RecvFixed(int fd, std::span<char> buffer, size_t size) {
+    if (buffer.size() < size) {
+        return {0, RecvResult::INSUFFICIENT_BUFFER};
+    }
+    return RecvFixed(fd, buffer.subspan(0, size));
+}
+
+[[nodiscard]] RecvResult RecvMessage(int fd, std::span<char> buffer) {
+    size_t total_size = 0;
+    RecvResult res = RecvFixed(fd, buffer, sizeof(Header));
+    if (!res) return res;
+    total_size += res.size;
+
     Header& header = *( (Header*) buffer.data() );
-    size_t num_to_recv = header.payload_size + header.header_size - sizeof(Header);
-    RecvFixed(fd, num_to_recv, remains);
-    return std::string_view(buffer.data() + header.header_size, header.payload_size);
+
+    size_t num_to_recv = header.payload_size + header.header_size - res.size;
+    std::span<char> remains = buffer.subspan(res.size);
+    res = RecvFixed(fd, remains, num_to_recv);
+    total_size += res.size;
+    return {total_size, res.error};
 }

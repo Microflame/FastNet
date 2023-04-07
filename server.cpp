@@ -32,10 +32,16 @@ int main(int argc, char* argv[]) {
         int client_fd = 0;
         FNET_EXIT_IF_ERROR(client_fd = accept(server_socked_fd, nullptr, nullptr));
         Defer d([&](){ FNET_EXIT_IF_ERROR(close(client_fd)); });
+        std::cout << "Client connected.\n";
 
-        std::string_view msg = RecvMessage(client_fd, {BUFFER, sizeof(BUFFER)});
+        while (true) {
+            RecvResult res = RecvMessage(client_fd, {BUFFER, sizeof(BUFFER)});
+            if (!res) break;
+            std::string_view msg = {BUFFER, res.size};
+            std::cout << ">>> " << msg.substr(sizeof(Header)) << "\n";
+        }
 
-        std::cout << "Received: " << msg << "\n";
+        std::cout << "Client disconnected.\n";
     }
 
     return 0;
