@@ -10,10 +10,10 @@ size_t MB = 1024 * KB;
 
 size_t BUFFER_SIZE = 128 * MB;
 
-#if 1
+#if 0
 size_t MIN_REQ_SIZE = 256;
 #else
-size_t MIN_REQ_SIZE = 500 * KB;
+size_t MIN_REQ_SIZE = 512 * KB;
 #endif
 
 size_t MAX_REQ_SIZE = MIN_REQ_SIZE * 2;
@@ -29,6 +29,8 @@ void OnSigInt(int) {
 
 int main(int argc, char* argv[]) {
     signal(SIGINT, OnSigInt);
+    FNET_ASSERT(argc == 2);
+    int port = std::atoll(argv[1]);
 
     std::vector<char> buffer(BUFFER_SIZE);
     InitProcess();
@@ -38,7 +40,7 @@ int main(int argc, char* argv[]) {
 
     sockaddr_in server_socked_addr = {};
     server_socked_addr.sin_family = AF_INET;
-    server_socked_addr.sin_port = htons(1339);
+    server_socked_addr.sin_port = htons(port);
     server_socked_addr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
 
     FNET_EXIT_IF_ERROR(connect(server_socked_fd, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
@@ -49,6 +51,7 @@ int main(int argc, char* argv[]) {
 
     auto start_time = std::chrono::high_resolution_clock::now();
     auto next_report_time = start_time;
+    auto next_reset_time = start_time;
     size_t num_requests = 0;
     size_t bytes_sent = 0;
     while (IS_RUNNING) {
@@ -58,12 +61,21 @@ int main(int argc, char* argv[]) {
         SockResult recv_res = RecvMessage_single(server_socked_fd, {buffer.data(), buffer.size()});
         if (!recv_res) break;
 
+        auto cur_time = std::chrono::high_resolution_clock::now();
+
+        if (cur_time > next_reset_time) {
+            next_reset_time = cur_time + std::chrono::seconds(5);
+            next_report_time = cur_time + std::chrono::milliseconds(500);
+            start_time = cur_time;
+            bytes_sent = 0;
+            num_requests = 0;
+        }
+
         bytes_sent += send_res.size;
         num_requests += 1;
 
-        auto cur_time = std::chrono::high_resolution_clock::now();
         if (cur_time >= next_report_time) {
-            next_report_time += std::chrono::milliseconds(100);
+            next_report_time = cur_time + std::chrono::milliseconds(500);
             double time = std::chrono::duration_cast<std::chrono::microseconds>(cur_time - start_time).count();
             time /= 1'000'000;
             double rps = num_requests / time;
