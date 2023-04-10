@@ -26,6 +26,8 @@
         }                                                               \
     } while (0)
 
+using Span = std::span<char>;
+
 template <typename T, typename E>
 class Result {
 public:
@@ -51,6 +53,8 @@ struct Header {
     uint16_t header_size;
     uint8_t header_version;
     uint64_t payload_size;
+
+    size_t GetFullSize() const { return header_size + payload_size; }
 };
 
 struct Message {
@@ -58,11 +62,11 @@ struct Message {
     std::string_view payload;
 };
 
-Header MakeHeader(const std::span<char>& payload) {
+Header MakeHeader(size_t payload_size) {
     Header header {
         .header_size = sizeof(Header),
         .header_version = 0,
-        .payload_size = payload.size()
+        .payload_size = payload_size
     };
     return header;
 }
@@ -91,13 +95,14 @@ struct SockResult {
         OK,
         DISCONNECTED,
         BROKEN,
-        INSUFFICIENT_BUFFER
+        INSUFFICIENT_BUFFER,
+        WOULD_BLOCK
     } error;
 
     operator bool() const { return error == OK; }
 };
 
-SockResult SendMessage_send(int fd, const std::span<char>& payload, std::span<char>& buffer) {
+SockResult SendMessage_send(int fd, const Span& payload, Span& buffer) {
     size_t total_size = payload.size() + sizeof(Header);
     if (total_size > buffer.size()) {
         return {0, SockResult::INSUFFICIENT_BUFFER};
@@ -105,7 +110,7 @@ SockResult SendMessage_send(int fd, const std::span<char>& payload, std::span<ch
     if (payload.size() == 0) {
         return {0, SockResult::OK};
     }
-    Header header = MakeHeader(payload);
+    Header header = MakeHeader(payload.size());
     
     char* data = buffer.data();
     *((Header*) data) = header;
@@ -126,11 +131,11 @@ SockResult SendMessage_send(int fd, const std::span<char>& payload, std::span<ch
     return {total_size, SockResult::OK};
 }
 
-SockResult SendMessage_sendmsg(int fd, const std::span<char>& payload) {
+SockResult SendMessage_sendmsg(int fd, const Span& payload) {
     if (payload.size() == 0) {
         return {0, SockResult::OK};
     }
-    Header header = MakeHeader(payload);
+    Header header = MakeHeader(payload.size());
     
     iovec msg_iov[2] = {
         iovec{.iov_base = &header, .iov_len = sizeof(Header)},
@@ -161,7 +166,7 @@ SockResult SendMessage_sendmsg(int fd, const std::span<char>& payload) {
     return {num_send_total, SockResult::OK};
 }
 
-SockResult RecvFixed(int fd, std::span<char> buffer) {
+SockResult RecvFixed(int fd, Span buffer) {
     size_t num_to_recv = buffer.size();
 
     char* data = buffer.data();
@@ -177,14 +182,14 @@ SockResult RecvFixed(int fd, std::span<char> buffer) {
     return {buffer.size(), SockResult::OK};
 }
 
-SockResult RecvFixed(int fd, std::span<char> buffer, size_t size) {
+SockResult RecvFixed(int fd, Span buffer, size_t size) {
     if (buffer.size() < size) {
         return {0, SockResult::INSUFFICIENT_BUFFER};
     }
     return RecvFixed(fd, buffer.subspan(0, size));
 }
 
-SockResult RecvMessage(int fd, std::span<char> buffer) {
+SockResult RecvMessage(int fd, Span buffer) {
     size_t total_size = 0;
     SockResult res = RecvFixed(fd, buffer, sizeof(Header));
     if (!res) return res;
@@ -193,13 +198,13 @@ SockResult RecvMessage(int fd, std::span<char> buffer) {
     Header& header = *( (Header*) buffer.data() );
 
     size_t num_to_recv = header.payload_size + header.header_size - res.size;
-    std::span<char> remains = buffer.subspan(res.size);
+    Span remains = buffer.subspan(res.size);
     res = RecvFixed(fd, remains, num_to_recv);
     total_size += res.size;
     return {total_size, res.error};
 }
 
-SockResult RecvMessage_single(int fd, std::span<char> buffer) {
+SockResult RecvMessage_single(int fd, Span buffer) {
     if (buffer.size() < sizeof(Header)) {
         return {0, SockResult::INSUFFICIENT_BUFFER};
     }
@@ -218,7 +223,7 @@ SockResult RecvMessage_single(int fd, std::span<char> buffer) {
     Header& header = *( (Header*) buffer.data() );
     size_t num_to_recv = header.payload_size + header.header_size - num_read_total;
 
-    std::span<char> remains = buffer.subspan(num_read_total);
+    Span remains = buffer.subspan(num_read_total);
     SockResult res = RecvFixed(fd, remains, num_to_recv);
     num_read_total += res.size;
     return {num_read_total, res.error};
