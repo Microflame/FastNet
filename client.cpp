@@ -3,7 +3,7 @@
 #include <chrono>
 #include <random>
 
-#include "common.hpp"
+#include "fastnet.hpp"
 
 size_t KB = 1024;
 size_t MB = 1024 * KB;
@@ -32,65 +32,58 @@ int main(int argc, char* argv[]) {
     FNET_ASSERT(argc == 2);
     int port = std::atoll(argv[1]);
 
-    std::vector<char> buffer(BUFFER_SIZE);
-    InitProcess();
+    fnet::Client client("localhost", port);
 
-    int server_socked_fd = 0;
-    FNET_EXIT_IF_ERROR(server_socked_fd = socket(AF_INET, SOCK_STREAM, 0));
+    std::string req = "Test";
+    std::string_view res = client.DoRequest(req);
+    std::cout << res << '\n';
 
-    sockaddr_in server_socked_addr = {};
-    server_socked_addr.sin_family = AF_INET;
-    server_socked_addr.sin_port = htons(port);
-    server_socked_addr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
 
-    FNET_EXIT_IF_ERROR(connect(server_socked_fd, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
+    // std::random_device rd;
+    // std::mt19937 rng(rd());
+    // std::uniform_int_distribution<size_t> uni(MIN_REQ_SIZE, MAX_REQ_SIZE);
 
-    std::random_device rd;
-    std::mt19937 rng(rd());
-    std::uniform_int_distribution<size_t> uni(MIN_REQ_SIZE, MAX_REQ_SIZE);
+    // auto start_time = std::chrono::high_resolution_clock::now();
+    // auto next_report_time = start_time;
+    // auto next_reset_time = start_time;
+    // size_t num_requests = 0;
+    // size_t bytes_sent = 0;
+    // while (IS_RUNNING) {
+    //     size_t size = uni(rng);
+    //     SockResult send_res = SendMessage_sendmsg(server_socked_fd, {buffer.data(), size});
+    //     if (!send_res) break;
+    //     SockResult recv_res = RecvMessage_single(server_socked_fd, {buffer.data(), buffer.size()});
+    //     if (!recv_res) break;
 
-    auto start_time = std::chrono::high_resolution_clock::now();
-    auto next_report_time = start_time;
-    auto next_reset_time = start_time;
-    size_t num_requests = 0;
-    size_t bytes_sent = 0;
-    while (IS_RUNNING) {
-        size_t size = uni(rng);
-        SockResult send_res = SendMessage_sendmsg(server_socked_fd, {buffer.data(), size});
-        if (!send_res) break;
-        SockResult recv_res = RecvMessage_single(server_socked_fd, {buffer.data(), buffer.size()});
-        if (!recv_res) break;
+        // auto cur_time = std::chrono::high_resolution_clock::now();
 
-        auto cur_time = std::chrono::high_resolution_clock::now();
+        // if (cur_time > next_reset_time) {
+        //     next_reset_time = cur_time + std::chrono::seconds(5);
+        //     next_report_time = cur_time + std::chrono::milliseconds(500);
+        //     start_time = cur_time;
+        //     bytes_sent = 0;
+        //     num_requests = 0;
+        // }
 
-        if (cur_time > next_reset_time) {
-            next_reset_time = cur_time + std::chrono::seconds(5);
-            next_report_time = cur_time + std::chrono::milliseconds(500);
-            start_time = cur_time;
-            bytes_sent = 0;
-            num_requests = 0;
-        }
+        // bytes_sent += send_res.size;
+        // num_requests += 1;
 
-        bytes_sent += send_res.size;
-        num_requests += 1;
+        // if (cur_time >= next_report_time) {
+        //     next_report_time = cur_time + std::chrono::milliseconds(500);
+        //     double time = std::chrono::duration_cast<std::chrono::microseconds>(cur_time - start_time).count();
+        //     time /= 1'000'000;
+        //     double rps = num_requests / time;
+        //     double mbps = bytes_sent / time / MB;
+        //     std::cout << '\r' << "Num reqs: " << num_requests << "\tRPS: " << rps << "\tThroughput: " << mbps << " MB/s";
+        //     std::cout.flush();
+        // }
+    // }
+    // auto cur_time = std::chrono::high_resolution_clock::now();
+    // double time = std::chrono::duration_cast<std::chrono::microseconds>(cur_time - start_time).count();
+    // time /= 1'000'000;
+    // double rps = num_requests / time;
+    // double mbps = bytes_sent / time / MB;
+    // std::cout << '\r' << "Num reqs: " << num_requests << "\tRPS: " << rps << "\tThroughput: " << mbps << " MB/s" << '\n';
 
-        if (cur_time >= next_report_time) {
-            next_report_time = cur_time + std::chrono::milliseconds(500);
-            double time = std::chrono::duration_cast<std::chrono::microseconds>(cur_time - start_time).count();
-            time /= 1'000'000;
-            double rps = num_requests / time;
-            double mbps = bytes_sent / time / MB;
-            std::cout << '\r' << "Num reqs: " << num_requests << "\tRPS: " << rps << "\tThroughput: " << mbps << " MB/s";
-            std::cout.flush();
-        }
-    }
-    auto cur_time = std::chrono::high_resolution_clock::now();
-    double time = std::chrono::duration_cast<std::chrono::microseconds>(cur_time - start_time).count();
-    time /= 1'000'000;
-    double rps = num_requests / time;
-    double mbps = bytes_sent / time / MB;
-    std::cout << '\r' << "Num reqs: " << num_requests << "\tRPS: " << rps << "\tThroughput: " << mbps << " MB/s" << '\n';
-
-    close(server_socked_fd);
     return 0;
 }
