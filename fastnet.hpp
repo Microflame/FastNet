@@ -42,7 +42,6 @@ struct DeferImpl {
 namespace fnet
 {
 
-
 using Span = std::span<char>;
 
 int SetFileFlag(int fd, int flag) {
@@ -71,11 +70,6 @@ struct Header {
     uint64_t payload_size;
 
     size_t GetFullSize() const { return header_size + payload_size; }
-};
-
-struct Message {
-    Header header;
-    std::string_view payload;
 };
 
 Header MakeHeader(size_t payload_size) {
@@ -112,36 +106,7 @@ struct SockResult {
     operator bool() const { return error == OK; }
 };
 
-SockResult SendMessage_send(int fd, const Span& payload, Span& buffer) {
-    size_t total_size = payload.size() + sizeof(Header);
-    if (total_size > buffer.size()) {
-        return {0, SockResult::INSUFFICIENT_BUFFER};
-    }
-    if (payload.size() == 0) {
-        return {0, SockResult::OK};
-    }
-    Header header = MakeHeader(payload.size());
-    
-    char* data = buffer.data();
-    *((Header*) data) = header;
-    data += sizeof(Header);
-    std::memcpy(data, payload.data(), payload.size());
-    data = buffer.data();
-    size_t remains = total_size;
-
-    while (remains) {
-        int num_send = send(fd, data, remains, MSG_NOSIGNAL);
-        FNET_ASSERT(num_send != 0);
-        if (num_send == -1) {
-            return {total_size - remains, SockResult::BROKEN};
-        }
-        remains -= num_send;
-        data += num_send;
-    }
-    return {total_size, SockResult::OK};
-}
-
-SockResult SendMessage_sendmsg(int fd, const Span& payload) {
+SockResult SendMessage(int fd, const Span& payload) {
     if (payload.size() == 0) {
         return {0, SockResult::OK};
     }
@@ -213,31 +178,6 @@ SockResult RecvMessage(int fd, Span buffer) {
     recv_total += res.size;
     return {recv_total, res.error};
 }
-
-// SockResult RecvMessage_single(int fd, Span buffer) {
-//     if (buffer.size() < sizeof(Header)) {
-//         return {0, SockResult::INSUFFICIENT_BUFFER};
-//     }
-
-//     char* data = buffer.data();
-//     size_t num_read_total = 0;
-//     while (num_read_total < sizeof(Header)) {
-//         int num_recv = recv(fd, data + num_read_total, buffer.size() - num_read_total, 0);
-//         switch (num_recv) {
-//             case 0: return {num_read_total, SockResult::DISCONNECTED};
-//             case -1: return {num_read_total, SockResult::BROKEN};
-//         }
-//         num_read_total += num_recv;
-//     }
-
-//     Header& header = *( (Header*) buffer.data() );
-//     size_t num_to_recv = header.payload_size + header.header_size - num_read_total;
-
-//     Span remains = buffer.subspan(num_read_total);
-//     SockResult res = RecvFixed(fd, remains, num_to_recv);
-//     num_read_total += res.size;
-//     return {num_read_total, res.error};
-// }
 
 class IndexPool {
 public:
@@ -593,7 +533,7 @@ public:
             throw std::runtime_error("Not connected");
         }
 
-        SockResult send_res = SendMessage_sendmsg(server_socket_fd_, request);
+        SockResult send_res = SendMessage(server_socket_fd_, request);
         if (!send_res) return {};
         SockResult recv_res = RecvMessage(server_socket_fd_, {buffer_.data(), buffer_.size()});
         if (!recv_res) return {};

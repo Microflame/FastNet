@@ -5,18 +5,16 @@
 
 #include "fastnet.hpp"
 
-size_t KB = 1024;
-size_t MB = 1024 * KB;
+// size_t KB = 1024;
+// size_t MB = 1024 * KB;
 
-size_t BUFFER_SIZE = 128 * MB;
+// #if 0
+// size_t MIN_REQ_SIZE = 256;
+// #else
+// size_t MIN_REQ_SIZE = 512 * KB;
+// #endif
 
-#if 0
-size_t MIN_REQ_SIZE = 256;
-#else
-size_t MIN_REQ_SIZE = 512 * KB;
-#endif
-
-size_t MAX_REQ_SIZE = MIN_REQ_SIZE * 2;
+// size_t MAX_REQ_SIZE = MIN_REQ_SIZE * 2;
 
 bool IS_RUNNING = true;
 
