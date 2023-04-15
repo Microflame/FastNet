@@ -4,18 +4,22 @@
 #include <cstring>
 #include <functional>
 #include <deque>
+#include <vector>
 
+#include <stdio.h>
 #include <netinet/ip.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <fcntl.h>
+
 
 #define FNET_EXIT_IF_ERROR(x)                                           \
     do {                                                                \
-        if ((x) == -1) {                                                \
+        if (int64_t(x) == -1) {                                         \
             PrintCError(__FILE__, __LINE__);                            \
             exit(EXIT_FAILURE);                                         \
         }                                                               \
@@ -43,6 +47,65 @@ namespace fnet
 {
 
 using Span = std::span<char>;
+
+static const size_t PAGE_SIZE = getpagesize();
+
+void PrintCError(const char* file, int line) {
+    char ERROR_BUFFER[1024] = {};
+    ERROR_BUFFER[0] = 0;
+    snprintf(ERROR_BUFFER, sizeof(ERROR_BUFFER), "%s:%d", file, line);
+    perror(ERROR_BUFFER);
+}
+
+class RingBuffer {
+public:
+    RingBuffer(size_t size) : buffer_size_(size) {
+        FNET_ASSERT(buffer_size_ > 0);
+        FNET_ASSERT(buffer_size_ % PAGE_SIZE == 0);
+
+        int fd = memfd_create("RingBuffer", 0);
+        FNET_EXIT_IF_ERROR(fd);
+        FNET_EXIT_IF_ERROR(ftruncate(fd, buffer_size_));
+
+        buffer_ = (char*) mmap(nullptr, 2 * buffer_size_, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        FNET_EXIT_IF_ERROR(buffer_);
+
+        FNET_EXIT_IF_ERROR(mmap(buffer_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
+        FNET_EXIT_IF_ERROR(mmap(buffer_ + buffer_size_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
+
+        FNET_EXIT_IF_ERROR(close(fd));
+    }
+
+    ~RingBuffer() {
+        if (buffer_) {
+            FNET_EXIT_IF_ERROR(munmap(buffer_, 2 * buffer_size_));
+            buffer_ = nullptr;
+        }
+    }
+
+    size_t BufferSize() const { return buffer_size_; }
+    size_t ReservedSize() const { return reserved_; }
+    size_t Available() const { return buffer_size_ - reserved_; }
+
+    char* Reserve(size_t reserved) {
+        FNET_ASSERT(reserved <= Available());
+        char* res = buffer_ + ((offset_ + reserved_) % buffer_size_);
+        reserved_ += reserved;
+        return res;
+    }
+
+    void Release(size_t released) {
+        FNET_ASSERT(released <= reserved_);
+        offset_ = (offset_ + released) % buffer_size_;
+        reserved_ -= released;
+    }
+
+private:
+    size_t buffer_size_ = 0;
+    size_t offset_ = 0;
+    size_t reserved_ = 0;
+    char* buffer_ = nullptr;
+};
 
 int SetFileFlag(int fd, int flag) {
     int old = fcntl(fd, F_GETFL);
@@ -79,13 +142,6 @@ Header MakeHeader(size_t payload_size) {
         .payload_size = payload_size
     };
     return header;
-}
-
-void PrintCError(const char* file, int line) {
-    char ERROR_BUFFER[1024] = {};
-    ERROR_BUFFER[0] = 0;
-    snprintf(ERROR_BUFFER, sizeof(ERROR_BUFFER), "%s:%d", file, line);
-    perror(ERROR_BUFFER);
 }
 
 in_addr_t MakeIpAddr(uint32_t b1, uint32_t b2, uint32_t b3, uint32_t b4) {
@@ -347,7 +403,6 @@ public:
         if (fd_ != -1) {
             FNET_EXIT_IF_ERROR( close(fd_) );
             fd_ = -1;
-            std::cerr << "Client disconnected.\n";
         }
         buffer_size_ = 0;
         sent_in_message_ = 0;
@@ -357,7 +412,6 @@ public:
     void Reset(int fd) {
         Close();
         fd_ = fd;
-            std::cerr << "Client connected.\n";
     }
 
     int Fd() const { return fd_; }
@@ -449,7 +503,7 @@ public:
                     FNET_EXIT_IF_ERROR(client_fd = accept(server_socked_fd, nullptr, nullptr));
                     if (!client_index_pool.NumAvailable()) {
                         FNET_EXIT_IF_ERROR(close(client_fd));
-                        std::cerr << "Client rejected.\n";
+                        fprintf(stderr, "Client rejected.");
                         continue;
                     }
 
@@ -516,12 +570,12 @@ public:
 
         FNET_EXIT_IF_ERROR(server_socket_fd_ = socket(AF_INET, SOCK_STREAM, 0));
 
-        sockaddr_in server_socked_addr = {};
-        server_socked_addr.sin_family = AF_INET;
-        server_socked_addr.sin_port = htons(port);
-        server_socked_addr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
+        sockaddr_in server_sockaddr = {};
+        server_sockaddr.sin_family = AF_INET;
+        server_sockaddr.sin_port = htons(port);
+        server_sockaddr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
 
-        FNET_EXIT_IF_ERROR(connect(server_socket_fd_, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
+        FNET_EXIT_IF_ERROR(connect(server_socket_fd_, (const struct sockaddr*) &server_sockaddr, sizeof(server_sockaddr)));
     }
 
     ~Client() {

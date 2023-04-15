@@ -3,7 +3,28 @@ cmake_minimum_required(VERSION 3.0)
 project(FastNet)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20 -fno-omit-frame-pointer -g -Wall -pedantic -Wno-unused-function")
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -g -Wall -pedantic -Wno-unused-function")
 
 add_executable(server server.cpp)
 add_executable(client client.cpp)
+
+add_executable(fastnet_test fastnet_test.cpp)
+
+
+include(FetchContent)
+if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
+  cmake_policy(SET CMP0135 NEW)
+endif()
+
+
+FetchContent_Declare(
+  googletest
+  URL https://github.com/google/googletest/archive/refs/tags/v1.13.0.zip
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+enable_testing()
+target_link_libraries(fastnet_test GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(fastnet_test)
