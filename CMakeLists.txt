@@ -8,6 +8,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -g -Wall -pedant
 
 add_executable(server server.cpp)
 add_executable(client client.cpp)
+add_executable(recv_perf experiments/recv_perf.cpp)
 
 add_executable(fastnet_test fastnet_test.cpp)
 

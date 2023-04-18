@@ -583,14 +583,12 @@ public:
     }
 
     std::string_view DoRequest(Span request) {
-        if (server_socket_fd_ == -1) {
-            throw std::runtime_error("Not connected");
-        }
+        FNET_ASSERT(server_socket_fd_ != -1);
 
         SockResult send_res = SendMessage(server_socket_fd_, request);
-        if (!send_res) return {};
+        FNET_ASSERT(send_res);
         SockResult recv_res = RecvMessage(server_socket_fd_, {buffer_.data(), buffer_.size()});
-        if (!recv_res) return {};
+        FNET_ASSERT(recv_res);
 
         Header& header = *( (Header*) buffer_.data() );
         return std::string_view(buffer_.data() + header.header_size, header.payload_size);
