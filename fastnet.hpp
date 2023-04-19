@@ -5,16 +5,18 @@
 #include <functional>
 #include <deque>
 #include <vector>
+#include <memory>
 
-#include <stdio.h>
-#include <netinet/ip.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <netinet/ip.h>
+#include <poll.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
-#include <fcntl.h>
 
 
 #define FNET_EXIT_IF_ERROR(x)                                           \
@@ -46,7 +48,43 @@ struct DeferImpl {
 namespace fnet
 {
 
-using Span = std::span<char>;
+class Span {
+public:
+    Span() {}
+
+    Span(char* str, size_t len) {
+        data_ = str;
+        size_ = len;
+    }
+
+    Span(char* str) {
+        data_ = str;
+        size_ = std::strlen(str);
+    }
+
+    Span(std::string& str) {
+        data_ = str.data();
+        size_ = str.size();
+    }
+
+    Span(std::span<char>& str) {
+        data_ = str.data();
+        size_ = str.size();
+    }
+
+    char* data() const { return data_; }
+    size_t size() const { return size_; }
+
+    Span subspan(size_t offset, size_t len = size_t(-1)) {
+        FNET_ASSERT(offset <= size_);
+        len = std::min(len, size_ - offset);
+        return Span(data_ + offset, len);
+    }
+
+private:
+    char* data_ = nullptr;
+    size_t size_ = 0;
+};
 
 static const size_t PAGE_SIZE = getpagesize();
 
@@ -87,9 +125,17 @@ public:
     size_t ReservedSize() const { return reserved_; }
     size_t Available() const { return buffer_size_ - reserved_; }
 
+    char* GetReservedStart() {
+        return buffer_ + offset_;
+    }
+
+    char* GetAvailableStart() {
+        return buffer_ + ((offset_ + reserved_) % buffer_size_);
+    }
+
     char* Reserve(size_t reserved) {
         FNET_ASSERT(reserved <= Available());
-        char* res = buffer_ + ((offset_ + reserved_) % buffer_size_);
+        char* res = GetAvailableStart();
         reserved_ += reserved;
         return res;
     }
@@ -560,14 +606,63 @@ void RunServer(ServerConfig conf, std::function<std::string(std::string_view)> h
     Server(std::move(conf)).Run(std::move(handle));
 }
 
+class Client;
+
+struct RequestFuture
+{
+    bool is_finished = {};
+    bool is_error = {};
+    std::string response = {};
+    Client* const client = {};
+
+    RequestFuture(Client* client) : client(client) {}
+
+    RequestFuture(const RequestFuture&) = delete;
+    RequestFuture(RequestFuture&&) = delete;
+    RequestFuture& operator=(const RequestFuture&) = delete;
+    RequestFuture& operator=(RequestFuture&&) = delete;
+
+    std::string GetResult() {
+        Wait();
+        return std::move(response);
+    }
+
+    void Wait();
+
+    void SetSuccessful()
+    {
+        is_finished = true;
+    }
+
+    void SetError()
+    {
+        is_error = true;
+        is_finished = true;
+    }
+};
+
+using RequestFuturePtr = std::unique_ptr<RequestFuture>;
+
+struct HeaderSpan {
+    Header header;
+    Span span;
+};
+
 class Client {
     int server_socket_fd_ = -1;
-    std::vector<char> buffer_;
+
+    std::deque<HeaderSpan> send_queue_;
+    size_t sent_in_this_iovec_ = 0;
+    size_t num_iovecs_sent_ = 0;
+
+    size_t recv_in_payload_ = 0;
+    bool header_is_parsed_ = false;
+    RingBuffer recv_buffer_;
+    std::deque<RequestFuture*> recv_queue_;
 
 public:
-    Client(const std::string& host, int port, size_t buffer_size = 2 * 1024 * 1024) {
-        buffer_.resize(buffer_size);
-
+    Client(const std::string& host, int port, size_t buffer_size = 64 * 1024) : recv_buffer_(buffer_size) {
+        FNET_ASSERT(recv_buffer_.BufferSize() >= sizeof(Header));
         FNET_EXIT_IF_ERROR(server_socket_fd_ = socket(AF_INET, SOCK_STREAM, 0));
 
         sockaddr_in server_sockaddr = {};
@@ -579,32 +674,169 @@ public:
     }
 
     ~Client() {
-        Disconnect();
+        Stop();
     }
 
-    std::string_view DoRequest(Span request) {
+    void ScheduleSend(Span request) {
+        send_queue_.push_back({MakeHeader(request.size()), request});
+    }
+
+    RequestFuturePtr ScheduleRecv() {
+        RequestFuturePtr future = std::make_unique<RequestFuture>(this);
+        recv_queue_.push_back(future.get());
+        return future;
+    }
+
+    RequestFuturePtr ScheduleRequest(Span request) {
+        ScheduleSend(request);
+        return ScheduleRecv();
+    }
+
+    void DoIoCycle() {
+        bool want_send = send_queue_.size();
+        bool want_recv = recv_queue_.size();
+
+        pollfd pfd = {};
+        pfd.fd = server_socket_fd_;
+        pfd.events = (POLLIN * want_recv) | (POLLOUT * want_send);
+        poll(&pfd, 1, -1);
+
+        FNET_ASSERT(!(pfd.revents & POLLNVAL));
+
+        if (pfd.revents & POLLERR || pfd.revents & POLLHUP) {
+            Stop();
+            return;
+        }
+
+        if (pfd.revents & POLLOUT) {
+            std::vector<iovec> iovecs(2 * send_queue_.size());
+            for (size_t i = 0; i < send_queue_.size(); ++i) {
+                iovecs[2 * i].iov_base = &send_queue_[i].header;
+                iovecs[2 * i].iov_len = sizeof(Header);
+                iovecs[2 * i + 1].iov_base = send_queue_[i].span.data();
+                iovecs[2 * i + 1].iov_len = send_queue_[i].span.size();
+            }
+
+            while (num_iovecs_sent_ < iovecs.size()) {
+                while (num_iovecs_sent_ < iovecs.size() && iovecs[num_iovecs_sent_].iov_len <= sent_in_this_iovec_) {
+                    sent_in_this_iovec_ -= iovecs[num_iovecs_sent_].iov_len;
+                    num_iovecs_sent_ += 1;
+                }
+
+                if (num_iovecs_sent_ == iovecs.size()) {
+                    break;
+                }
+
+                iovec original_iovec = iovecs[num_iovecs_sent_];
+                iovecs[num_iovecs_sent_].iov_base = (char*) iovecs[num_iovecs_sent_].iov_base + sent_in_this_iovec_;
+                iovecs[num_iovecs_sent_].iov_len -= sent_in_this_iovec_;
+
+                msghdr msg = {
+                    .msg_iov = &iovecs[num_iovecs_sent_],
+                    .msg_iovlen = iovecs.size() - num_iovecs_sent_,
+                };
+                int num_sent = sendmsg(server_socket_fd_, &msg, MSG_NOSIGNAL);
+
+                iovecs[num_iovecs_sent_] = original_iovec;
+
+                if (num_sent == -1 && (errno == EAGAIN || EWOULDBLOCK)) {
+                    break;
+                }
+                FNET_ASSERT(num_sent > 0);
+
+                sent_in_this_iovec_ += num_sent;
+            }
+
+            size_t num_messages_sent = num_iovecs_sent_ / 2;
+            num_iovecs_sent_ -= num_messages_sent * 2;
+            for (size_t i = 0; i < num_messages_sent; i++) {
+                send_queue_.pop_front();
+            }
+        }
+
+        if (pfd.revents & POLLIN) {
+            while (recv_queue_.size()) {
+                char* avail = recv_buffer_.GetAvailableStart();
+                size_t num_avail = recv_buffer_.Available();
+
+                int num_recv = recv(server_socket_fd_, avail, num_avail, MSG_NOSIGNAL);
+                if (num_recv == 0) {
+                    Stop();
+                    return;
+                }
+
+                if (num_recv < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
+                    break;
+                }
+                FNET_ASSERT(num_recv > 0);
+
+                recv_buffer_.Reserve(num_recv);
+
+                // Deliver responses to Futures
+                while (recv_queue_.size()) {
+                    char* reserved = recv_buffer_.GetReservedStart();
+                    size_t reserved_size = recv_buffer_.ReservedSize();
+
+                    if (!header_is_parsed_) {
+                        if (reserved_size >= sizeof(Header)) {
+                            Header& header = *((Header*) reserved);
+                            recv_queue_[0]->response.resize(header.payload_size);
+                            header_is_parsed_ = true;
+                            recv_buffer_.Release(sizeof(Header));
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    size_t remains_in_payload = recv_queue_[0]->response.size() - recv_in_payload_;
+
+                    if (reserved_size == 0 && remains_in_payload) {
+                        break;
+                    }
+
+                    size_t num_to_copy = std::min(remains_in_payload, reserved_size);
+                    std::memcpy(recv_queue_[0]->response.data() + recv_in_payload_, reserved, num_to_copy);
+                    recv_buffer_.Release(num_to_copy);
+                    recv_in_payload_ += num_to_copy;
+
+                    if (recv_in_payload_ == recv_queue_[0]->response.size()) {
+                        recv_queue_[0]->SetSuccessful();
+                        recv_queue_.pop_front();
+                        header_is_parsed_ = false;
+                        recv_in_payload_ = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    std::string DoRequest(Span request) {
         FNET_ASSERT(server_socket_fd_ != -1);
 
-        SockResult send_res = SendMessage(server_socket_fd_, request);
-        FNET_ASSERT(send_res);
-        SockResult recv_res = RecvMessage(server_socket_fd_, {buffer_.data(), buffer_.size()});
-        FNET_ASSERT(recv_res);
-
-        Header& header = *( (Header*) buffer_.data() );
-        return std::string_view(buffer_.data() + header.header_size, header.payload_size);
+        auto rf = ScheduleRequest(request);
+        rf->Wait();
+        FNET_ASSERT(!rf->is_error);
+        return std::move(rf->response);
     }
 
-    std::string_view DoRequest(std::string& str) {
-        return DoRequest({str.data(), str.size()});
-    }
-
-    void Disconnect() {
+    void Stop() {
         if (server_socket_fd_ != -1) {
             close(server_socket_fd_);
             server_socket_fd_ = -1;
         }
+
+        for (RequestFuture* rf: recv_queue_) {
+            rf->SetError();
+        }
     }
 };
+
+void RequestFuture::Wait() {
+    while (!is_finished) {
+        client->DoIoCycle();
+    }
+}
 
 } // namespace fnet
 

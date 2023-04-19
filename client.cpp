@@ -32,9 +32,29 @@ int main(int argc, char* argv[]) {
 
     fnet::Client client("localhost", port);
 
-    std::string req = "Test";
-    std::string_view res = client.DoRequest(req);
-    std::cout << res << '\n';
+    fnet::RequestFuturePtr r1 = client.ScheduleRequest("Request 1 data");
+    fnet::RequestFuturePtr r2 = client.ScheduleRequest("Request 2 data");
+    fnet::RequestFuturePtr r3 = client.ScheduleRequest("Request 3 data");
+    fnet::RequestFuturePtr r4 = client.ScheduleRequest("Request 4 data");
+    fnet::RequestFuturePtr r5 = client.ScheduleRequest("Request 5 data");
+    fnet::RequestFuturePtr r6 = client.ScheduleRequest("Request 6 data");
+    fnet::RequestFuturePtr r7 = client.ScheduleRequest("Request 7 data");
+    fnet::RequestFuturePtr r8 = client.ScheduleRequest("Request 8 data");
+    fnet::RequestFuturePtr r9 = client.ScheduleRequest("Request 9 data");
+    fnet::RequestFuturePtr r10 = client.ScheduleRequest("Request 10 data");
+
+    r10->Wait();
+
+    std::cout << "r1: " << r1->GetResult() << '\n'; 
+    std::cout << "r2: " << r2->GetResult() << '\n'; 
+    std::cout << "r3: " << r3->GetResult() << '\n'; 
+    std::cout << "r4: " << r4->GetResult() << '\n'; 
+    std::cout << "r5: " << r5->GetResult() << '\n'; 
+    std::cout << "r6: " << r6->GetResult() << '\n'; 
+    std::cout << "r7: " << r7->GetResult() << '\n'; 
+    std::cout << "r8: " << r8->GetResult() << '\n'; 
+    std::cout << "r9: " << r9->GetResult() << '\n'; 
+    std::cout << "r10: " << r10->GetResult() << '\n'; 
 
 
     // std::random_device rd;
