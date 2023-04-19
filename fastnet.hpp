@@ -13,10 +13,10 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <netinet/tcp.h>
 
 
 #define FNET_EXIT_IF_ERROR(x)                                           \
@@ -157,6 +157,10 @@ int SetFileFlag(int fd, int flag) {
     int old = fcntl(fd, F_GETFL);
     if (old == -1) return -1;
     return fcntl(fd, F_SETFL, old | flag);
+}
+
+int SetSockOpt(int fd, int opt, int level, int enable = 1) {
+    return setsockopt(fd, level, opt, &enable, sizeof(enable));
 }
 
 int AddEpollEvent(int epoll_fd, int target_fd, int events_mask, uint64_t data) {
@@ -512,8 +516,7 @@ public:
         FNET_EXIT_IF_ERROR(SetFileFlag(server_socked_fd, O_NONBLOCK));
 
         if (conf_.reuse_addr) {
-            int enable = 1;
-            FNET_EXIT_IF_ERROR(setsockopt(server_socked_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)));
+            FNET_EXIT_IF_ERROR(SetSockOpt(server_socked_fd, SO_REUSEADDR, SOL_SOCKET));
         }
 
         sockaddr_in server_socked_addr = {};
@@ -553,7 +556,8 @@ public:
                         continue;
                     }
 
-                    SetFileFlag(client_fd, O_NONBLOCK);
+                    FNET_EXIT_IF_ERROR(SetSockOpt(client_fd, TCP_NODELAY, IPPROTO_TCP));
+                    FNET_EXIT_IF_ERROR(SetFileFlag(client_fd, O_NONBLOCK));
                     size_t client_id = client_index_pool.Claim();
                     clients[client_id].Reset(client_fd);
                     FNET_EXIT_IF_ERROR(AddEpollEvent(epoll_fd, client_fd, EPOLLIN | EPOLLRDHUP | EPOLLHUP, client_id));
@@ -671,6 +675,7 @@ public:
         server_sockaddr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
 
         FNET_EXIT_IF_ERROR(connect(server_socket_fd_, (const struct sockaddr*) &server_sockaddr, sizeof(server_sockaddr)));
+        FNET_EXIT_IF_ERROR(SetSockOpt(server_socket_fd_, TCP_NODELAY, IPPROTO_TCP));
     }
 
     ~Client() {
