@@ -4,7 +4,9 @@
 #include "fastnet.hpp"
 
 std::string Handle(std::string_view message) {
-    return ">>> " + std::string(message);
+    return std::string(message);
+    // return ">>> " + std::string(message);
+    // return "OK";
 }
 
 int main(int argc, char* argv[]) {
@@ -13,7 +15,9 @@ int main(int argc, char* argv[]) {
 
     fnet::RunServer({
         .host = "localhost",
-        .port = port
+        .port = port,
+        .max_num_clients = 4,
+        .reuse_addr = true,
     }, Handle);
 
     return 0;

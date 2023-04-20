@@ -32,16 +32,27 @@ int main(int argc, char* argv[]) {
 
     fnet::Client client("localhost", port);
 
-    fnet::RequestFuturePtr r1 = client.ScheduleRequest("Request 1 data");
-    fnet::RequestFuturePtr r2 = client.ScheduleRequest("Request 2 data");
-    fnet::RequestFuturePtr r3 = client.ScheduleRequest("Request 3 data");
-    fnet::RequestFuturePtr r4 = client.ScheduleRequest("Request 4 data");
-    fnet::RequestFuturePtr r5 = client.ScheduleRequest("Request 5 data");
-    fnet::RequestFuturePtr r6 = client.ScheduleRequest("Request 6 data");
-    fnet::RequestFuturePtr r7 = client.ScheduleRequest("Request 7 data");
-    fnet::RequestFuturePtr r8 = client.ScheduleRequest("Request 8 data");
-    fnet::RequestFuturePtr r9 = client.ScheduleRequest("Request 9 data");
-    fnet::RequestFuturePtr r10 = client.ScheduleRequest("Request 10 data");
+    std::string s1 = "Request 1 data";
+    std::string s2 = "Request 2 data";
+    std::string s3 = "Request 3 data";
+    std::string s4 = "Request 4 data";
+    std::string s5 = "Request 5 data";
+    std::string s6 = "Request 6 data";
+    std::string s7 = "Request 7 data";
+    std::string s8 = "Request 8 data";
+    std::string s9 = "Request 9 data";
+    std::string s10 = "Request 10 data";
+
+    fnet::RequestFuturePtr r1 = client.ScheduleRequest(s1);
+    fnet::RequestFuturePtr r2 = client.ScheduleRequest(s2);
+    fnet::RequestFuturePtr r3 = client.ScheduleRequest(s3);
+    fnet::RequestFuturePtr r4 = client.ScheduleRequest(s4);
+    fnet::RequestFuturePtr r5 = client.ScheduleRequest(s5);
+    fnet::RequestFuturePtr r6 = client.ScheduleRequest(s6);
+    fnet::RequestFuturePtr r7 = client.ScheduleRequest(s7);
+    fnet::RequestFuturePtr r8 = client.ScheduleRequest(s8);
+    fnet::RequestFuturePtr r9 = client.ScheduleRequest(s9);
+    fnet::RequestFuturePtr r10 = client.ScheduleRequest(s10);
 
     r10->Wait();
 
