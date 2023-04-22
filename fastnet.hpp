@@ -19,6 +19,8 @@
 #include <sys/mman.h>
 #include <netinet/tcp.h>
 
+#include "common.hpp"
+
 
 #define FNET_EXIT_IF_ERROR(x)                                           \
     do {                                                                \
@@ -772,13 +774,16 @@ public:
     }
 
     void DoIoCycle() {
+
         bool want_send = send_queue_.size();
         bool want_recv = recv_queue_.size();
 
         pollfd pfd = {};
         pfd.fd = server_socket_fd_;
         pfd.events = (POLLIN * want_recv) | (POLLOUT * want_send);
+        auto trace_event = common::Tracer::Begin("poll");
         poll(&pfd, 1, -1);
+        common::Tracer::End(trace_event);
 
         FNET_ASSERT(!(pfd.revents & POLLNVAL));
 
@@ -814,7 +819,9 @@ public:
                     .msg_iov = &iovecs[num_iovecs_sent_],
                     .msg_iovlen = iovecs.size() - num_iovecs_sent_,
                 };
+                auto tev = common::Tracer::Begin("sendmsg");
                 int num_sent = sendmsg(server_socket_fd_, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+                common::Tracer::End(tev);
 
                 iovecs[num_iovecs_sent_] = original_iovec;
 
@@ -841,7 +848,9 @@ public:
 
                     size_t remains_in_payload = recv_queue_[0]->response.size() - recv_in_payload_;
                     if (remains_in_payload >= 1024) {
+                        auto tev = common::Tracer::Begin("recv large");
                         int num_recv = recv(server_socket_fd_, recv_queue_[0]->response.data() + recv_in_payload_, remains_in_payload, MSG_NOSIGNAL | MSG_DONTWAIT);
+                        common::Tracer::End(tev);
                         if (num_recv == 0) {
                             Stop();
                             return;
@@ -868,7 +877,9 @@ public:
                 char* avail = recv_buffer_.GetAvailableStart();
                 size_t num_avail = recv_buffer_.Available();
 
+                auto trace_event = common::Tracer::Begin("recv");
                 int num_recv = recv(server_socket_fd_, avail, num_avail, MSG_NOSIGNAL | MSG_DONTWAIT);
+                common::Tracer::End(trace_event);
                 if (num_recv == 0) {
                     Stop();
                     return;
@@ -882,20 +893,27 @@ public:
                 recv_buffer_.Reserve(num_recv);
 
                 // Deliver responses to Futures
+                trace_event = common::Tracer::Begin("Deliver responses");
                 while (recv_queue_.size()) {
                     char* reserved = recv_buffer_.GetReservedStart();
                     size_t reserved_size = recv_buffer_.ReservedSize();
 
                     if (!header_is_parsed_) {
+                        auto trace_event = common::Tracer::Begin("header_is_parsed_");
                         if (reserved_size >= sizeof(Header)) {
                             Header& header = *((Header*) reserved);
+                            auto trace_event2 = common::Tracer::Begin("string::resize(%lld)", header.payload_size);
                             recv_queue_[0]->response.resize(header.payload_size);
+                            common::Tracer::End(trace_event2);
                             header_is_parsed_ = true;
                             recv_buffer_.Release(sizeof(Header));
+                            common::Tracer::End(trace_event);
                             continue;
                         } else {
+                            common::Tracer::End(trace_event);
                             break;
                         }
+                        common::Tracer::End(trace_event);
                     }
 
                     size_t remains_in_payload = recv_queue_[0]->response.size() - recv_in_payload_;
@@ -905,7 +923,9 @@ public:
                     }
 
                     size_t num_to_copy = std::min(remains_in_payload, reserved_size);
+                    auto trace_event = common::Tracer::Begin("memcpy");
                     std::memcpy(recv_queue_[0]->response.data() + recv_in_payload_, reserved, num_to_copy);
+                    common::Tracer::End(trace_event);
                     recv_buffer_.Release(num_to_copy);
                     recv_in_payload_ += num_to_copy;
 
@@ -916,6 +936,7 @@ public:
                         recv_in_payload_ = 0;
                     }
                 }
+                common::Tracer::End(trace_event);
             }
         }
     }
@@ -923,7 +944,9 @@ public:
 
 void RequestFuture::Wait() {
     while (!is_finished) {
+        auto tev = common::Tracer::Begin("client->DoIoCycle");
         client->DoIoCycle();
+        common::Tracer::End(tev);
     }
 }
 

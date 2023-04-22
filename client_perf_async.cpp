@@ -2,13 +2,15 @@
 #include <vector>
 #include <chrono>
 #include <random>
+#include <fstream>
 
 #include "fastnet.hpp"
+#include "common.hpp"
 
 size_t KB = 1024;
 size_t MB = 1024 * KB;
 
-#if 1
+#if 0
 size_t MIN_REQ_SIZE = 256;
 #else
 size_t MIN_REQ_SIZE = 512 * KB;
@@ -30,6 +32,8 @@ int main(int argc, char* argv[]) {
     FNET_ASSERT(argc == 2);
     int port = std::atoll(argv[1]);
 
+    common::Tracer::Get();
+
     fnet::Client client("localhost", port);
 
     std::random_device rd;
@@ -44,13 +48,15 @@ int main(int argc, char* argv[]) {
     size_t num_requests = 0;
     size_t bytes_sent = 0;
 
-    std::vector<fnet::RequestFuturePtr> reqs(100);
+    std::vector<fnet::RequestFuturePtr> reqs(3);
     size_t req_idx = 0;
     while (IS_RUNNING) {
         size_t size = uni(rng);
 
         if (req_idx >= reqs.size()) {
+            auto begin = common::Tracer::Begin("Client/GetResults");
             auto res = reqs[req_idx % reqs.size()]->GetResult();
+            common::Tracer::End(begin);
         }
         reqs[req_idx % reqs.size()] = client.ScheduleRequest({buffer.data(), size});
         req_idx += 1;
@@ -85,6 +91,12 @@ int main(int argc, char* argv[]) {
     double rps = num_requests / time;
     double mbps = bytes_sent / time / MB;
     std::cout << '\r' << "Num reqs: " << num_requests << " RPS: " << rps << " Throughput: " << mbps << " MB/s" << '\n';
+
+    if (common::Tracer::INITIALIZED) {
+        std::ofstream ofs("trace.json");
+        FNET_ASSERT(ofs);
+        ofs << common::Tracer::ToString();
+    }
 
     return 0;
 }
