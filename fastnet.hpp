@@ -390,6 +390,7 @@ public:
             return {0, SockResult::OK};
         }
 
+        auto trace_event = common::Tracer::Begin("Send:BuildIovecs");
         size_t num_sent_during_call = 0;
         std::vector<iovec> iovecs(2 * send_queue_.size());
         for (size_t i = 0; i < send_queue_.size(); ++i) {
@@ -407,13 +408,16 @@ public:
         }
         iovecs[num_iovecs_sent].iov_base = (char*) iovecs[num_iovecs_sent].iov_base + sent_in_iovec;
         iovecs[num_iovecs_sent].iov_len -= sent_in_iovec;
+        common::Tracer::End(trace_event);
 
         while (iovecs.size() > num_iovecs_sent) {
             msghdr msg = {
                 .msg_iov = &iovecs[num_iovecs_sent],
                 .msg_iovlen = iovecs.size() - num_iovecs_sent,
             };
+            auto trace_event = common::Tracer::Begin("sendmsg");
             int num_sent = sendmsg(fd_, &msg, MSG_NOSIGNAL);
+            common::Tracer::End(trace_event);
             FNET_ASSERT(num_sent != 0);
             if (num_sent == -1 && (errno == EAGAIN || EWOULDBLOCK)) {
                 // return {num_sent_during_call, SockResult::WOULD_BLOCK};
@@ -513,7 +517,9 @@ void ProcessIncomingTraffic(ClientPipe& client, const HandleFn& handler) {
 
         DbgRecv(header.payload_size);
         Span message_body = data.subspan(header.header_size, header.payload_size);
+        // auto trace_event = common::Tracer::Begin("Schedule message");
         client.ScheduleMessage(handler({message_body.data(), message_body.size()}));
+        // common::Tracer::End(trace_event);
 
         data = data.subspan(full_size);
         num_bytes_processed += full_size;
@@ -531,9 +537,18 @@ struct ServerConfig {
 
 class Server {
     ServerConfig conf_;
+    bool is_running_ = true;
 
 public:
     Server(ServerConfig conf) : conf_(std::move(conf)) {}
+
+    void Stop() {
+        is_running_ = false;
+    }
+
+    bool IsRunning() const {
+        return is_running_;
+    }
 
     void Run(const HandleFn& handler) {
         int server_socked_fd = 0;
@@ -565,20 +580,24 @@ public:
 
         std::vector<ClientPipe> clients(conf_.max_num_clients);
         IndexPool client_index_pool(conf_.max_num_clients);
-        while (true) {
+        while (is_running_) {
+            auto trace_event = common::Tracer::Begin("epoll_wait");
             int epoll_wait_res = epoll_wait(epoll_fd, epoll_events, MAX_NUM_EPOLL_EVENTS, -1);
-            if (epoll_wait_res == EINTR) continue;
+            common::Tracer::End(trace_event);
+            if (errno == EINTR) continue;
             FNET_EXIT_IF_ERROR(epoll_wait_res);
 
             for (int i = 0; i < epoll_wait_res; i++) {
                 struct epoll_event& ev = epoll_events[i];
 
+                auto trace_event = common::Tracer::Begin("Accept");
                 if (ev.data.u64 == uint64_t(-1)) {
                     int client_fd = 0;
                     FNET_EXIT_IF_ERROR(client_fd = accept(server_socked_fd, nullptr, nullptr));
                     if (!client_index_pool.NumAvailable()) {
                         FNET_EXIT_IF_ERROR(close(client_fd));
                         fprintf(stderr, "Client rejected.");
+                        common::Tracer::End(trace_event);
                         continue;
                     }
 
@@ -587,49 +606,66 @@ public:
                     size_t client_id = client_index_pool.Claim();
                     clients[client_id].Reset(client_fd);
                     FNET_EXIT_IF_ERROR(AddEpollEvent(epoll_fd, client_fd, EPOLLIN | EPOLLRDHUP | EPOLLHUP, client_id));
+                    common::Tracer::End(trace_event);
                     continue;
                 }
+                common::Tracer::End(trace_event);
 
                 size_t client_id = ev.data.u64;
                 ClientPipe& client = clients[client_id];
 
+                trace_event = common::Tracer::Begin("EPOLLHUP | EPOLLRDHUP | EPOLLERR");
                 if (ev.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)) {
                     FNET_EXIT_IF_ERROR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
                     client_index_pool.Return(client_id);
                     client.Close();
+                    common::Tracer::End(trace_event);
                     continue;
                 }
+                common::Tracer::End(trace_event);
 
+                trace_event = common::Tracer::Begin("EPOLLIN");
                 bool had_pending_out = client.HasPendingOutgoingMessages();
                 if (ev.events & EPOLLIN) {
+                    auto trace_client_recv = common::Tracer::Begin("client.Recv()");
                     SockResult res = client.Recv();
+                    common::Tracer::End(trace_client_recv);
                     if (res.error == SockResult::BROKEN || res.error == SockResult::DISCONNECTED) {
                         FNET_EXIT_IF_ERROR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
                         client_index_pool.Return(client_id);
                         client.Close();
+                        common::Tracer::End(trace_event);
                         continue;
                     }
 
+                    auto trace_ProcessIncomingTraffic = common::Tracer::Begin("ProcessIncomingTraffic");
                     ProcessIncomingTraffic(client, handler);
+                    common::Tracer::End(trace_ProcessIncomingTraffic);
                 }
                 bool writes_appeared = !had_pending_out && client.HasPendingOutgoingMessages();
+                common::Tracer::End(trace_event);
 
+                trace_event = common::Tracer::Begin("EPOLLOUT");
                 if (writes_appeared || (ev.events & EPOLLOUT)) {
                     SockResult res = client.Send();
                     if (res.error == SockResult::BROKEN) {
                         FNET_EXIT_IF_ERROR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
                         client_index_pool.Return(client_id);
                         client.Close();
+                        common::Tracer::End(trace_event);
                         continue;
                     }
                 }
+                common::Tracer::End(trace_event);
 
+                trace_event = common::Tracer::Begin("ModEpollEvents");
                 int event_mask = EPOLLIN | EPOLLRDHUP | EPOLLHUP;
                 if (client.HasPendingOutgoingMessages()) {
                     event_mask |= EPOLLOUT;
                 }
 
                 FNET_EXIT_IF_ERROR(ModEpollEvents(epoll_fd, client.Fd(), event_mask, client_id));
+                common::Tracer::End(trace_event);
             }
         }
     }
@@ -719,15 +755,16 @@ public:
         send_queue_.push_back({MakeHeader(request.size()), request});
     }
 
-    RequestFuturePtr ScheduleRecv() {
+    RequestFuturePtr ScheduleRecv(std::string dest) {
         RequestFuturePtr future = std::make_unique<RequestFuture>(this);
+        future->response = std::move(dest);
         recv_queue_.push_back(future.get());
         return future;
     }
 
-    RequestFuturePtr ScheduleRequest(Span request) {
+    RequestFuturePtr ScheduleRequest(Span request, std::string dest = {}) {
         ScheduleSend(request);
-        return ScheduleRecv();
+        return ScheduleRecv(std::move(dest));
     }
 
     void Wait() {

@@ -1,10 +1,26 @@
 #include <iostream>
 #include <vector>
+#include <fstream>
 
 #include "fastnet.hpp"
+#include "common.hpp"
+
+fnet::Server* SERVER;
+
+void OnSigInt(int) {
+    if (!SERVER->IsRunning()) {
+        exit(1);
+    }
+    SERVER->Stop();
+}
 
 std::string Handle(std::string_view message) {
     return std::string(message);
+    // // auto trace_event = common::Tracer::Begin("Copy to string");
+    // std::string res(message);
+    // // common::Tracer::End(trace_event);
+    // return res;
+
     // return ">>> " + std::string(message);
     // return "OK";
 }
@@ -13,12 +29,24 @@ int main(int argc, char* argv[]) {
     FNET_ASSERT(argc == 2);
     int port = std::atoll(argv[1]);
 
-    fnet::RunServer({
+    common::Tracer::Get();
+
+    fnet::Server server({
         .host = "localhost",
         .port = port,
         .max_num_clients = 4,
         .reuse_addr = true,
-    }, Handle);
+    });
+    SERVER = &server;
+    signal(SIGINT, OnSigInt);
+
+    server.Run(Handle);
+
+    if (common::Tracer::INITIALIZED) {
+        std::ofstream ofs("trace_server.json");
+        FNET_ASSERT(ofs);
+        ofs << common::Tracer::ToString();
+    }
 
     return 0;
 }

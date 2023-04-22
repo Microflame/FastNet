@@ -49,16 +49,19 @@ int main(int argc, char* argv[]) {
     size_t bytes_sent = 0;
 
     std::vector<fnet::RequestFuturePtr> reqs(3);
+    std::vector<std::string> response_buffers(reqs.size());
     size_t req_idx = 0;
     while (IS_RUNNING) {
         size_t size = uni(rng);
+        size_t wrapped_idx = req_idx % reqs.size();
 
         if (req_idx >= reqs.size()) {
             auto begin = common::Tracer::Begin("Client/GetResults");
-            auto res = reqs[req_idx % reqs.size()]->GetResult();
+            std::string res = reqs[wrapped_idx]->GetResult();
+            response_buffers[wrapped_idx] = std::move(res);
             common::Tracer::End(begin);
         }
-        reqs[req_idx % reqs.size()] = client.ScheduleRequest({buffer.data(), size});
+        reqs[wrapped_idx] = client.ScheduleRequest({buffer.data(), size}, std::move(response_buffers[wrapped_idx]));
         req_idx += 1;
 
 
@@ -93,7 +96,7 @@ int main(int argc, char* argv[]) {
     std::cout << '\r' << "Num reqs: " << num_requests << " RPS: " << rps << " Throughput: " << mbps << " MB/s" << '\n';
 
     if (common::Tracer::INITIALIZED) {
-        std::ofstream ofs("trace.json");
+        std::ofstream ofs("trace_client.json");
         FNET_ASSERT(ofs);
         ofs << common::Tracer::ToString();
     }
