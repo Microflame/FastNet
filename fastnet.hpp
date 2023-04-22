@@ -372,7 +372,7 @@ public:
         size_t num_read_total = 0;
         while (GetFreeSize()) {
             int recv_res = recv(fd_, GetWriteBegin(), GetFreeSize(), 0);
-            if (recv_res == -1 && (errno == EAGAIN || EWOULDBLOCK)) {
+            if (recv_res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 return {num_read_total, SockResult::WOULD_BLOCK};
             }
             FNET_EXIT_IF_ERROR(recv_res);
@@ -419,10 +419,11 @@ public:
             int num_sent = sendmsg(fd_, &msg, MSG_NOSIGNAL);
             common::Tracer::End(trace_event);
             FNET_ASSERT(num_sent != 0);
-            if (num_sent == -1 && (errno == EAGAIN || EWOULDBLOCK)) {
+            if (num_sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 // return {num_sent_during_call, SockResult::WOULD_BLOCK};
                 break;
             }
+            FNET_EXIT_IF_ERROR(num_sent);
             if (num_sent == -1) {
                 return {num_sent_during_call, SockResult::BROKEN};
             }
@@ -862,10 +863,10 @@ public:
 
                 iovecs[num_iovecs_sent_] = original_iovec;
 
-                if (num_sent == -1 && (errno == EAGAIN || EWOULDBLOCK)) {
+                if (num_sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                     break;
                 }
-                FNET_ASSERT(num_sent > 0);
+                FNET_EXIT_IF_ERROR(num_sent);
 
                 sent_in_this_iovec_ += num_sent;
             }
@@ -896,7 +897,7 @@ public:
                         if (num_recv < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
                             break;
                         }
-                        FNET_ASSERT(num_recv > 0);
+                        FNET_EXIT_IF_ERROR(num_recv);
 
                         recv_in_payload_ += num_recv;
 
@@ -925,7 +926,7 @@ public:
                 if (num_recv < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
                     break;
                 }
-                FNET_ASSERT(num_recv > 0);
+                FNET_EXIT_IF_ERROR(num_recv);
 
                 recv_buffer_.Reserve(num_recv);
 
