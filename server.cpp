@@ -14,15 +14,8 @@ void OnSigInt(int) {
     SERVER->Stop();
 }
 
-std::string Handle(std::string_view message) {
-    return std::string(message);
-    // // auto trace_event = common::Tracer::Begin("Copy to string");
-    // std::string res(message);
-    // // common::Tracer::End(trace_event);
-    // return res;
-
-    // return ">>> " + std::string(message);
-    // return "OK";
+void Handle(std::string_view message, std::string& dest) {
+    dest.assign(message);
 }
 
 int main(int argc, char* argv[]) {

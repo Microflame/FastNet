@@ -22,10 +22,15 @@
 #include "common.hpp"
 
 
+// #define FNET_DEBUG 1
+
+namespace fnet
+{
+
 #define FNET_EXIT_IF_ERROR(x)                                           \
     do {                                                                \
         if (int64_t(x) == -1) {                                         \
-            PrintCError(__FILE__, __LINE__);                            \
+            ::fnet::PrintCError(__FILE__, __LINE__);                    \
             exit(EXIT_FAILURE);                                         \
         }                                                               \
     } while (0)
@@ -46,26 +51,35 @@ struct DeferImpl {
 
 #define FNET_CONCAT_IMPL(a, b) a ## b
 #define FNET_CONCAT(a, b) FNET_CONCAT_IMPL(a, b)
-#define FNET_DEFER DeferImpl FNET_CONCAT(defer_, __LINE__) = [&]()
+#define FNET_DEFER ::fnet::DeferImpl FNET_CONCAT(defer_, __LINE__) = [&]()
 
-namespace fnet
-{
+#if FNET_DEBUG
 
 void DbgRecv(size_t size) {
-    // static size_t total = 0;
-    // static size_t cnt = 0;
-    // cnt += 1;
-    // total += size;
-    // std::cerr << "recv: " << cnt << " (" << total << ")\n";
+    static size_t total = 0;
+    static size_t cnt = 0;
+    cnt += 1;
+    total += size;
+    std::cerr << "recv: " << cnt << " (" << total << ")\n";
 }
 
 void DbgSend(size_t size) {
-    // static size_t total = 0;
-    // static size_t cnt = 0;
-    // cnt += 1;
-    // total += size;
-    // std::cerr << "sent: " << cnt << " (" << total << ")\n";
+    static size_t total = 0;
+    static size_t cnt = 0;
+    cnt += 1;
+    total += size;
+    std::cerr << "sent: " << cnt << " (" << total << ")\n";
 }
+
+#define FNET_DBG_RECV(size) DbgRecv(size)
+#define FNET_DBG_SEND(size) DbgSend(size)
+
+#else // #ifdef FNET_DEBGU
+
+#define FNET_DBG_RECV(size)
+#define FNET_DBG_SEND(size)
+
+#endif
 
 class Span {
 public:
@@ -302,6 +316,39 @@ SockResult RecvMessage(int fd, Span buffer) {
     return {recv_total, res.error};
 }
 
+template <typename T>
+class Pool {
+public:
+    Pool(size_t initial_size = 1) {
+        FNET_ASSERT(initial_size > 0);
+        pool_.resize(initial_size);
+        for (size_t i = 0; i < initial_size; i++) {
+            pool_[i] = std::unique_ptr<T>(new T);
+        }
+    }
+
+    std::unique_ptr<T> Claim() {
+        if (pool_.size() == 0) {
+            size_t to_add = pool_.capacity();
+            pool_.resize(to_add);
+            for (size_t i = 0; i < to_add; i++) {
+                pool_[i] = std::unique_ptr<T>(new T);
+            }
+        }
+
+        std::unique_ptr<T> res = std::move(pool_.back());
+        pool_.pop_back();
+        return res;
+    }
+
+    void Return(std::unique_ptr<T> value) {
+        pool_.emplace_back(std::move(value));
+    }
+
+private:
+    std::vector<std::unique_ptr<T>> pool_;
+};
+
 class IndexPool {
 public:
     IndexPool(size_t size) : pool_(size), num_available_(size) {
@@ -333,8 +380,15 @@ private:
 
 struct OutgoingMessage {
     Header header;
-    std::string message;
+    std::unique_ptr<std::string> message;
+    Pool<std::string>* pool_;
+
+    ~OutgoingMessage() {
+        pool_->Return(std::move(message));
+    }
 };
+
+using HandleFn = std::function<void(std::string_view, std::string&)>;
 
 class ClientPipe {
 public:
@@ -371,7 +425,9 @@ public:
     SockResult Recv() {
         size_t num_read_total = 0;
         while (GetFreeSize()) {
+            auto trace_event = common::Tracer::Begin("recv");
             int recv_res = recv(fd_, GetWriteBegin(), GetFreeSize(), 0);
+            common::Tracer::End(trace_event);
             if (recv_res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 return {num_read_total, SockResult::WOULD_BLOCK};
             }
@@ -396,8 +452,8 @@ public:
         for (size_t i = 0; i < send_queue_.size(); ++i) {
             iovecs[2 * i].iov_base = &send_queue_[i].header;
             iovecs[2 * i].iov_len = sizeof(Header);
-            iovecs[2 * i + 1].iov_base = send_queue_[i].message.data();
-            iovecs[2 * i + 1].iov_len = send_queue_[i].message.size();
+            iovecs[2 * i + 1].iov_base = send_queue_[i].message->data();
+            iovecs[2 * i + 1].iov_len = send_queue_[i].message->size();
         }
 
         size_t num_iovecs_sent = 0;
@@ -442,16 +498,39 @@ public:
         }
 
         for (size_t i = 0; i < num_iovecs_sent / 2; i++) {
-            DbgSend(send_queue_.front().header.payload_size);
+            FNET_DBG_SEND(send_queue_.front().header.payload_size);
             sent_in_message_ -= send_queue_.front().header.GetFullSize();
             send_queue_.pop_front();
         }
         return {num_sent_during_call, SockResult::OK};
     }
 
-    void ScheduleMessage(std::string message) {
-        Header h = MakeHeader(message.size());
-        send_queue_.push_back({h, std::move(message)});
+    void ProcessIncomingTraffic(const HandleFn& handler) {
+        Span data = GetUsedBuffer();
+        size_t num_bytes_processed = 0;
+        while (data.size() >= sizeof(Header)) {
+            Header& header = *( (Header*) data.data() );
+            size_t full_size = header.GetFullSize();
+            if (data.size() < full_size) {
+                break;
+            }
+
+            FNET_DBG_RECV(header.payload_size);
+            Span message_body = data.subspan(header.header_size, header.payload_size);
+            auto trace_event = common::Tracer::Begin("Schedule message");
+            std::unique_ptr<std::string> response = string_pool_.Claim();
+            handler({message_body.data(), message_body.size()}, *response);
+
+            Header h = MakeHeader(response->size());
+            send_queue_.emplace_back(h, std::move(response), &string_pool_);
+
+            common::Tracer::End(trace_event);
+
+            data = data.subspan(full_size);
+            num_bytes_processed += full_size;
+        }
+
+        MarkConsumed(num_bytes_processed);
     }
 
     // size_t GetFullSize() const { return buffer_.size(); }
@@ -486,7 +565,7 @@ public:
         }
         buffer_size_ = 0;
         sent_in_message_ = 0;
-        send_queue_ = {};
+        send_queue_.clear();
     }
 
     void Reset(int fd) {
@@ -502,32 +581,9 @@ private:
     size_t buffer_size_ = 0;
     std::deque<OutgoingMessage> send_queue_;
     size_t sent_in_message_ = 0;
+    Pool<std::string> string_pool_;
 };
 
-using HandleFn = std::function<std::string(std::string_view)>;
-
-void ProcessIncomingTraffic(ClientPipe& client, const HandleFn& handler) {
-    Span data = client.GetUsedBuffer();
-    size_t num_bytes_processed = 0;
-    while (data.size() >= sizeof(Header)) {
-        Header& header = *( (Header*) data.data() );
-        size_t full_size = header.GetFullSize();
-        if (data.size() < full_size) {
-            break;
-        }
-
-        DbgRecv(header.payload_size);
-        Span message_body = data.subspan(header.header_size, header.payload_size);
-        // auto trace_event = common::Tracer::Begin("Schedule message");
-        client.ScheduleMessage(handler({message_body.data(), message_body.size()}));
-        // common::Tracer::End(trace_event);
-
-        data = data.subspan(full_size);
-        num_bytes_processed += full_size;
-    }
-
-    client.MarkConsumed(num_bytes_processed);
-}
 
 struct ServerConfig {
     std::string host;
@@ -640,7 +696,7 @@ public:
                     }
 
                     auto trace_ProcessIncomingTraffic = common::Tracer::Begin("ProcessIncomingTraffic");
-                    ProcessIncomingTraffic(client, handler);
+                    client.ProcessIncomingTraffic(handler);
                     common::Tracer::End(trace_ProcessIncomingTraffic);
                 }
                 bool writes_appeared = !had_pending_out && client.HasPendingOutgoingMessages();
@@ -672,7 +728,7 @@ public:
     }
 };
 
-void RunServer(ServerConfig conf, std::function<std::string(std::string_view)> handle) {
+void RunServer(ServerConfig conf, HandleFn handle) {
     Server(std::move(conf)).Run(std::move(handle));
 }
 
@@ -702,7 +758,7 @@ struct RequestFuture
     void SetSuccessful()
     {
         is_finished = true;
-        DbgRecv(response.size());
+        FNET_DBG_RECV(response.size());
     }
 
     void SetError()
@@ -874,7 +930,7 @@ public:
             size_t num_messages_sent = num_iovecs_sent_ / 2;
             num_iovecs_sent_ -= num_messages_sent * 2;
             for (size_t i = 0; i < num_messages_sent; i++) {
-                DbgSend(send_queue_.front().header.payload_size);
+                FNET_DBG_SEND(send_queue_.front().header.payload_size);
                 send_queue_.pop_front();
             }
         }
