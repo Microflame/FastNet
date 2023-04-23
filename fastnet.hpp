@@ -8,16 +8,18 @@
 #include <memory>
 #include <iostream>
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/ip.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
-#include <netinet/tcp.h>
 
 #include "common.hpp"
 
@@ -27,33 +29,41 @@
 namespace fnet
 {
 
-#define FNET_EXIT_IF_ERROR(x)                                           \
+// <Macros>
+
+#define FNET_CONCAT_IMPL(a, b) a ## b
+#define FNET_CONCAT(a, b) FNET_CONCAT_IMPL(a, b)
+
+#define FNET_STRINGIZE_IMPL(x) #x
+#define FNET_STRINGIZE(x) FNET_STRINGIZE_IMPL(x)
+
+#define FNET_THROW(err)                                                 \
+    do {                                                                \
+        std::string location = __FILE__":"                              \
+                               FNET_STRINGIZE(__LINE__) ": ";           \
+        throw std::runtime_error(location + err);                       \
+    } while (0)
+
+std::string ErrnoToString(int);
+#define FNET_THROW_IF_POSIX_ERR(x)                                      \
     do {                                                                \
         if (int64_t(x) == -1) {                                         \
-            ::fnet::PrintCError(__FILE__, __LINE__);                    \
-            exit(EXIT_FAILURE);                                         \
+            FNET_THROW(ErrnoToString(errno));                           \
         }                                                               \
     } while (0)
 
 #define FNET_ASSERT(x)                                                  \
     do {                                                                \
         if (!(x)) {                                                     \
-            throw std::runtime_error("(" #x ") was not fulfilled");     \
+            FNET_THROW("(" #x ") was not fulfilled");                   \
         }                                                               \
     } while (0)
 
 template <typename F> 
-struct DeferImpl {
-    DeferImpl(F f): fn(f) {}
-    ~DeferImpl() { fn(); }
-    F fn;
-};
-
-#define FNET_CONCAT_IMPL(a, b) a ## b
-#define FNET_CONCAT(a, b) FNET_CONCAT_IMPL(a, b)
+struct DeferImpl;
 #define FNET_DEFER ::fnet::DeferImpl FNET_CONCAT(defer_, __LINE__) = [&]()
 
-#if FNET_DEBUG
+#ifdef FNET_DEBUG
 
 void DbgRecv(size_t size) {
     static size_t total = 0;
@@ -80,6 +90,23 @@ void DbgSend(size_t size) {
 #define FNET_DBG_SEND(size)
 
 #endif
+
+// </Macros>
+
+// <Constants>
+
+static const size_t PAGE_SIZE = getpagesize();
+
+// </Constants>
+
+// <DataStructs>
+
+template <typename F> 
+struct DeferImpl {
+    DeferImpl(F f): fn(f) {}
+    ~DeferImpl() { fn(); }
+    F fn;
+};
 
 class Span {
 public:
@@ -119,15 +146,6 @@ private:
     size_t size_ = 0;
 };
 
-static const size_t PAGE_SIZE = getpagesize();
-
-void PrintCError(const char* file, int line) {
-    char ERROR_BUFFER[1024] = {};
-    ERROR_BUFFER[0] = 0;
-    snprintf(ERROR_BUFFER, sizeof(ERROR_BUFFER), "%s:%d", file, line);
-    perror(ERROR_BUFFER);
-}
-
 class RingBuffer {
 public:
     RingBuffer(size_t size) : buffer_size_(size) {
@@ -135,21 +153,22 @@ public:
         FNET_ASSERT(buffer_size_ % PAGE_SIZE == 0);
 
         int fd = memfd_create("RingBuffer", 0);
-        FNET_EXIT_IF_ERROR(fd);
-        FNET_EXIT_IF_ERROR(ftruncate(fd, buffer_size_));
+        FNET_THROW_IF_POSIX_ERR(fd);
+        FNET_THROW_IF_POSIX_ERR(ftruncate(fd, buffer_size_));
 
         buffer_ = (char*) mmap(nullptr, 2 * buffer_size_, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-        FNET_EXIT_IF_ERROR(buffer_);
+        FNET_THROW_IF_POSIX_ERR(buffer_);
 
-        FNET_EXIT_IF_ERROR(mmap(buffer_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
-        FNET_EXIT_IF_ERROR(mmap(buffer_ + buffer_size_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
+        FNET_THROW_IF_POSIX_ERR(mmap(buffer_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
+        FNET_THROW_IF_POSIX_ERR(mmap(buffer_ + buffer_size_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
 
-        FNET_EXIT_IF_ERROR(close(fd));
+        FNET_THROW_IF_POSIX_ERR(close(fd));
     }
 
     ~RingBuffer() {
         if (buffer_) {
-            FNET_EXIT_IF_ERROR(munmap(buffer_, 2 * buffer_size_));
+            // TODO: Log if this fails
+            munmap(buffer_, 2 * buffer_size_);
             buffer_ = nullptr;
         }
     }
@@ -186,6 +205,18 @@ private:
     char* buffer_ = nullptr;
 };
 
+// </DataStructs>
+
+// <POSIX>
+
+std::string ErrnoToString(int errnum) {
+    char ERROR_BUFFER[1024] = {};
+    ERROR_BUFFER[0] = 0;
+    const char* err_str = strerror_r(errnum, ERROR_BUFFER, sizeof(ERROR_BUFFER));
+
+    return {err_str};
+}
+
 int SetFileFlag(int fd, int flag) {
     int old = fcntl(fd, F_GETFL);
     if (old == -1) return -1;
@@ -203,12 +234,31 @@ int AddEpollEvent(int epoll_fd, int target_fd, int events_mask, uint64_t data) {
     return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, target_fd, &ev);
 }
 
-int ModEpollEvents(int epoll_fd, int target_fd, int events_mask, uint64_t data) {
+int ModEpollEvent(int epoll_fd, int target_fd, int events_mask, uint64_t data) {
     epoll_event ev = {};
     ev.events = events_mask;
     ev.data.u64 = data;
     return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, target_fd, &ev);
 }
+
+in_addr_t Resolve(const char* hostname) {
+    addrinfo* getaddrinfo_res = nullptr;
+    addrinfo hints = {};
+    hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    FNET_THROW_IF_POSIX_ERR(getaddrinfo(hostname, nullptr, &hints, &getaddrinfo_res));
+    FNET_DEFER { freeaddrinfo(getaddrinfo_res); };
+
+    FNET_ASSERT(getaddrinfo_res);
+    FNET_ASSERT(getaddrinfo_res->ai_addr);
+    in_addr_t res = {};
+    inet_pton(AF_INET, getaddrinfo_res->ai_addr->sa_data, &res);
+    return res;
+}
+
+// </POSIX>
 
 struct Header {
     uint16_t header_size;
@@ -226,11 +276,6 @@ Header MakeHeader(size_t payload_size) {
     };
     return header;
 }
-
-in_addr_t MakeIpAddr(uint32_t b1, uint32_t b2, uint32_t b3, uint32_t b4) {
-    return (b4 << 24) | (b3 << 16) | (b2 << 8) | b1;
-}
-
 
 struct SockResult {
     size_t size;
@@ -267,7 +312,7 @@ SockResult SendMessage(int fd, const Span& payload) {
         int num_send = sendmsg(fd, &msg, MSG_NOSIGNAL);
         FNET_ASSERT(num_send != 0);
         if (num_send == -1) {
-            FNET_EXIT_IF_ERROR(num_send);
+            FNET_THROW_IF_POSIX_ERR(num_send);
             return {num_send_total, SockResult::BROKEN};
         }
         num_send_total += num_send;
@@ -299,21 +344,6 @@ SockResult RecvFixed(int fd, Span buffer, size_t size) {
         return {0, SockResult::INSUFFICIENT_BUFFER};
     }
     return RecvFixed(fd, buffer.data(), size);
-}
-
-SockResult RecvMessage(int fd, Span buffer) {
-    size_t recv_total = 0;
-    SockResult res = RecvFixed(fd, buffer, sizeof(Header));
-    if (!res) return res;
-    recv_total += res.size;
-
-    Header& header = *( (Header*) buffer.data() );
-
-    size_t num_to_recv = header.payload_size + header.header_size - res.size;
-    Span remains = buffer.subspan(res.size);
-    res = RecvFixed(fd, remains, num_to_recv);
-    recv_total += res.size;
-    return {recv_total, res.error};
 }
 
 template <typename T>
@@ -431,7 +461,7 @@ public:
             if (recv_res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 return {num_read_total, SockResult::WOULD_BLOCK};
             }
-            FNET_EXIT_IF_ERROR(recv_res);
+            FNET_THROW_IF_POSIX_ERR(recv_res);
             if (recv_res == 0) {
                 return {num_read_total, SockResult::DISCONNECTED};
             }
@@ -479,7 +509,7 @@ public:
                 // return {num_sent_during_call, SockResult::WOULD_BLOCK};
                 break;
             }
-            FNET_EXIT_IF_ERROR(num_sent);
+            FNET_THROW_IF_POSIX_ERR(num_sent);
             if (num_sent == -1) {
                 return {num_sent_during_call, SockResult::BROKEN};
             }
@@ -560,7 +590,7 @@ public:
 
     void Close() {
         if (fd_ != -1) {
-            FNET_EXIT_IF_ERROR( close(fd_) );
+            FNET_THROW_IF_POSIX_ERR( close(fd_) );
             fd_ = -1;
         }
         buffer_size_ = 0;
@@ -609,28 +639,28 @@ public:
 
     void Run(const HandleFn& handler) {
         int server_socked_fd = 0;
-        FNET_EXIT_IF_ERROR(server_socked_fd = socket(AF_INET, SOCK_STREAM, 0));
-        FNET_DEFER { FNET_EXIT_IF_ERROR(close(server_socked_fd)); };
-        FNET_EXIT_IF_ERROR(SetFileFlag(server_socked_fd, O_NONBLOCK));
+        FNET_THROW_IF_POSIX_ERR(server_socked_fd = socket(AF_INET, SOCK_STREAM, 0));
+        FNET_DEFER { FNET_THROW_IF_POSIX_ERR(close(server_socked_fd)); };
+        FNET_THROW_IF_POSIX_ERR(SetFileFlag(server_socked_fd, O_NONBLOCK));
 
         if (conf_.reuse_addr) {
-            FNET_EXIT_IF_ERROR(SetSockOpt(server_socked_fd, SO_REUSEADDR, SOL_SOCKET));
+            FNET_THROW_IF_POSIX_ERR(SetSockOpt(server_socked_fd, SO_REUSEADDR, SOL_SOCKET));
         }
 
         sockaddr_in server_socked_addr = {};
         server_socked_addr.sin_family = AF_INET;
         server_socked_addr.sin_port = htons(conf_.port);
-        server_socked_addr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
+        server_socked_addr.sin_addr.s_addr = Resolve(conf_.host.c_str());
 
-        FNET_EXIT_IF_ERROR(bind(server_socked_fd, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
+        FNET_THROW_IF_POSIX_ERR(bind(server_socked_fd, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
 
-        FNET_EXIT_IF_ERROR(listen(server_socked_fd, 16));
+        FNET_THROW_IF_POSIX_ERR(listen(server_socked_fd, 16));
 
         int epoll_fd = 0;
-        FNET_EXIT_IF_ERROR(epoll_fd = epoll_create(1));
-        FNET_DEFER { FNET_EXIT_IF_ERROR(close(epoll_fd)); };
+        FNET_THROW_IF_POSIX_ERR(epoll_fd = epoll_create(1));
+        FNET_DEFER { FNET_THROW_IF_POSIX_ERR(close(epoll_fd)); };
 
-        FNET_EXIT_IF_ERROR(AddEpollEvent(epoll_fd, server_socked_fd, EPOLLIN, -1));
+        FNET_THROW_IF_POSIX_ERR(AddEpollEvent(epoll_fd, server_socked_fd, EPOLLIN, -1));
 
         constexpr size_t MAX_NUM_EPOLL_EVENTS = 64;
         struct epoll_event epoll_events[MAX_NUM_EPOLL_EVENTS] = {};
@@ -642,7 +672,7 @@ public:
             int epoll_wait_res = epoll_wait(epoll_fd, epoll_events, MAX_NUM_EPOLL_EVENTS, -1);
             common::Tracer::End(trace_event);
             if (errno == EINTR) continue;
-            FNET_EXIT_IF_ERROR(epoll_wait_res);
+            FNET_THROW_IF_POSIX_ERR(epoll_wait_res);
 
             for (int i = 0; i < epoll_wait_res; i++) {
                 struct epoll_event& ev = epoll_events[i];
@@ -650,19 +680,19 @@ public:
                 auto trace_event = common::Tracer::Begin("Accept");
                 if (ev.data.u64 == uint64_t(-1)) {
                     int client_fd = 0;
-                    FNET_EXIT_IF_ERROR(client_fd = accept(server_socked_fd, nullptr, nullptr));
+                    FNET_THROW_IF_POSIX_ERR(client_fd = accept(server_socked_fd, nullptr, nullptr));
                     if (!client_index_pool.NumAvailable()) {
-                        FNET_EXIT_IF_ERROR(close(client_fd));
+                        FNET_THROW_IF_POSIX_ERR(close(client_fd));
                         fprintf(stderr, "Client rejected.");
                         common::Tracer::End(trace_event);
                         continue;
                     }
 
-                    FNET_EXIT_IF_ERROR(SetSockOpt(client_fd, TCP_NODELAY, IPPROTO_TCP));
-                    FNET_EXIT_IF_ERROR(SetFileFlag(client_fd, O_NONBLOCK));
+                    FNET_THROW_IF_POSIX_ERR(SetSockOpt(client_fd, TCP_NODELAY, IPPROTO_TCP));
+                    FNET_THROW_IF_POSIX_ERR(SetFileFlag(client_fd, O_NONBLOCK));
                     size_t client_id = client_index_pool.Claim();
                     clients[client_id].Reset(client_fd);
-                    FNET_EXIT_IF_ERROR(AddEpollEvent(epoll_fd, client_fd, EPOLLIN | EPOLLRDHUP | EPOLLHUP, client_id));
+                    FNET_THROW_IF_POSIX_ERR(AddEpollEvent(epoll_fd, client_fd, EPOLLIN | EPOLLRDHUP | EPOLLHUP, client_id));
                     common::Tracer::End(trace_event);
                     continue;
                 }
@@ -673,7 +703,7 @@ public:
 
                 trace_event = common::Tracer::Begin("EPOLLHUP | EPOLLRDHUP | EPOLLERR");
                 if (ev.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)) {
-                    FNET_EXIT_IF_ERROR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
+                    FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
                     client_index_pool.Return(client_id);
                     client.Close();
                     common::Tracer::End(trace_event);
@@ -688,7 +718,7 @@ public:
                     SockResult res = client.Recv();
                     common::Tracer::End(trace_client_recv);
                     if (res.error == SockResult::BROKEN || res.error == SockResult::DISCONNECTED) {
-                        FNET_EXIT_IF_ERROR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
+                        FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
                         client_index_pool.Return(client_id);
                         client.Close();
                         common::Tracer::End(trace_event);
@@ -706,7 +736,7 @@ public:
                 if (writes_appeared || (ev.events & EPOLLOUT)) {
                     SockResult res = client.Send();
                     if (res.error == SockResult::BROKEN) {
-                        FNET_EXIT_IF_ERROR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
+                        FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
                         client_index_pool.Return(client_id);
                         client.Close();
                         common::Tracer::End(trace_event);
@@ -721,7 +751,7 @@ public:
                     event_mask |= EPOLLOUT;
                 }
 
-                FNET_EXIT_IF_ERROR(ModEpollEvents(epoll_fd, client.Fd(), event_mask, client_id));
+                FNET_THROW_IF_POSIX_ERR(ModEpollEvent(epoll_fd, client.Fd(), event_mask, client_id));
                 common::Tracer::End(trace_event);
             }
         }
@@ -791,15 +821,15 @@ class Client {
 public:
     Client(const std::string& host, int port, size_t buffer_size = 64 * 1024) : recv_buffer_(buffer_size), buffer_(8 * 1024 * 1024) {
         FNET_ASSERT(recv_buffer_.BufferSize() >= sizeof(Header));
-        FNET_EXIT_IF_ERROR(server_socket_fd_ = socket(AF_INET, SOCK_STREAM, 0));
+        FNET_THROW_IF_POSIX_ERR(server_socket_fd_ = socket(AF_INET, SOCK_STREAM, 0));
 
         sockaddr_in server_sockaddr = {};
         server_sockaddr.sin_family = AF_INET;
         server_sockaddr.sin_port = htons(port);
-        server_sockaddr.sin_addr.s_addr = MakeIpAddr(127, 0, 0, 1);
+        server_sockaddr.sin_addr.s_addr = Resolve(host.c_str());
 
-        FNET_EXIT_IF_ERROR(connect(server_socket_fd_, (const struct sockaddr*) &server_sockaddr, sizeof(server_sockaddr)));
-        FNET_EXIT_IF_ERROR(SetSockOpt(server_socket_fd_, TCP_NODELAY, IPPROTO_TCP));
+        FNET_THROW_IF_POSIX_ERR(connect(server_socket_fd_, (const struct sockaddr*) &server_sockaddr, sizeof(server_sockaddr)));
+        FNET_THROW_IF_POSIX_ERR(SetSockOpt(server_socket_fd_, TCP_NODELAY, IPPROTO_TCP));
         // The socket is blocking by default.
         // Whenewer we want it in the non blocking mode, we'll use MSG_DONTWAIT
     }
@@ -922,7 +952,7 @@ public:
                 if (num_sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                     break;
                 }
-                FNET_EXIT_IF_ERROR(num_sent);
+                FNET_THROW_IF_POSIX_ERR(num_sent);
 
                 sent_in_this_iovec_ += num_sent;
             }
@@ -953,7 +983,7 @@ public:
                         if (num_recv < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
                             break;
                         }
-                        FNET_EXIT_IF_ERROR(num_recv);
+                        FNET_THROW_IF_POSIX_ERR(num_recv);
 
                         recv_in_payload_ += num_recv;
 
@@ -982,7 +1012,7 @@ public:
                 if (num_recv < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
                     break;
                 }
-                FNET_EXIT_IF_ERROR(num_recv);
+                FNET_THROW_IF_POSIX_ERR(num_recv);
 
                 recv_buffer_.Reserve(num_recv);
 

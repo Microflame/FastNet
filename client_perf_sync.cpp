@@ -8,7 +8,7 @@
 size_t KB = 1024;
 size_t MB = 1024 * KB;
 
-#if 1
+#if 0
 size_t MIN_REQ_SIZE = 256;
 #else
 size_t MIN_REQ_SIZE = 512 * KB;
@@ -45,7 +45,8 @@ int main(int argc, char* argv[]) {
     size_t bytes_sent = 0;
     while (IS_RUNNING) {
         size_t size = uni(rng);
-        client.DoSyncRequest({buffer.data(), size}, res);
+        // client.DoSyncRequest({buffer.data(), size}, res);
+        res = client.DoRequest({buffer.data(), size});
 
 
         auto cur_time = std::chrono::high_resolution_clock::now();

@@ -10,7 +10,7 @@
 size_t KB = 1024;
 size_t MB = 1024 * KB;
 
-#if 0
+#if 1
 size_t MIN_REQ_SIZE = 256;
 #else
 size_t MIN_REQ_SIZE = 512 * KB;
@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
     FNET_ASSERT(argc == 2);
     int port = std::atoll(argv[1]);
 
-    common::Tracer::Get();
+    // common::Tracer::Get();
 
     fnet::Client client("localhost", port);
 

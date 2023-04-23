@@ -22,7 +22,7 @@ int main(int argc, char* argv[]) {
     FNET_ASSERT(argc == 2);
     int port = std::atoll(argv[1]);
 
-    common::Tracer::Get();
+    // common::Tracer::Get();
 
     fnet::Server server({
         .host = "localhost",
