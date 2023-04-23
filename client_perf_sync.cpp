@@ -8,7 +8,7 @@
 size_t KB = 1024;
 size_t MB = 1024 * KB;
 
-#if 0
+#if 1
 size_t MIN_REQ_SIZE = 256;
 #else
 size_t MIN_REQ_SIZE = 512 * KB;
@@ -40,24 +40,15 @@ int main(int argc, char* argv[]) {
     std::vector<char> buffer(16 * 1024 * 1024);
     auto start_time = std::chrono::high_resolution_clock::now();
     auto next_report_time = start_time;
-    auto next_reset_time = start_time;
     size_t num_requests = 0;
     size_t bytes_sent = 0;
     while (IS_RUNNING) {
         size_t size = uni(rng);
         // client.DoSyncRequest({buffer.data(), size}, res);
-        res = client.DoRequest({buffer.data(), size});
+        res = client.DoRequest({buffer.data(), size}, std::move(res));
 
 
         auto cur_time = std::chrono::high_resolution_clock::now();
-
-        if (cur_time > next_reset_time) {
-            next_reset_time = cur_time + std::chrono::seconds(5);
-            next_report_time = cur_time + std::chrono::milliseconds(500);
-            start_time = cur_time;
-            bytes_sent = 0;
-            num_requests = 0;
-        }
 
         bytes_sent += size;
         num_requests += 1;
@@ -68,7 +59,7 @@ int main(int argc, char* argv[]) {
             time /= 1'000'000;
             double rps = num_requests / time;
             double mbps = bytes_sent / time / MB;
-            std::cout << '\r' << "Num reqs: " << num_requests << "\tRPS: " << rps << "\tThroughput: " << mbps << " MB/s";
+            std::cout << '\r' << "Num reqs: " << num_requests << " RPS: " << rps << " Throughput: " << mbps << " MB/s";
             std::cout.flush();
         }
     }
@@ -77,7 +68,7 @@ int main(int argc, char* argv[]) {
     time /= 1'000'000;
     double rps = num_requests / time;
     double mbps = bytes_sent / time / MB;
-    std::cout << '\r' << "Num reqs: " << num_requests << "\tRPS: " << rps << "\tThroughput: " << mbps << " MB/s" << '\n';
+    std::cout << '\r' << "Num reqs: " << num_requests << " RPS: " << rps << " Throughput: " << mbps << " MB/s" << '\n';
 
     return 0;
 }

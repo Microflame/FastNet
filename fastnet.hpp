@@ -291,9 +291,6 @@ struct SockResult {
 };
 
 SockResult SendMessage(int fd, const Span& payload) {
-    if (payload.size() == 0) {
-        return {0, SockResult::OK};
-    }
     Header header = MakeHeader(payload.size());
     
     iovec msg_iov[2] = {
@@ -308,13 +305,10 @@ SockResult SendMessage(int fd, const Span& payload) {
     size_t& remains_in_payload = msg_iov[1].iov_len;
 
     size_t num_send_total = 0;
-    while (remains_in_payload) {
+    while (remains_in_payload + remains_in_header) {
         int num_send = sendmsg(fd, &msg, MSG_NOSIGNAL);
         FNET_ASSERT(num_send != 0);
-        if (num_send == -1) {
-            FNET_THROW_IF_POSIX_ERR(num_send);
-            return {num_send_total, SockResult::BROKEN};
-        }
+        FNET_THROW_IF_POSIX_ERR(num_send);
         num_send_total += num_send;
         if (num_send > (int) remains_in_header) {
             num_send -= remains_in_header;
@@ -339,23 +333,22 @@ SockResult RecvFixed(int fd, char* data, size_t size) {
     return {size, SockResult::OK};
 }
 
-SockResult RecvFixed(int fd, Span buffer, size_t size) {
-    if (buffer.size() < size) {
-        return {0, SockResult::INSUFFICIENT_BUFFER};
-    }
-    return RecvFixed(fd, buffer.data(), size);
-}
-
 template <typename T>
 class Pool {
 public:
-    Pool(size_t initial_size = 1) {
+    Pool() : Pool(1) {}
+    Pool(size_t initial_size) {
         FNET_ASSERT(initial_size > 0);
         pool_.resize(initial_size);
         for (size_t i = 0; i < initial_size; i++) {
             pool_[i] = std::unique_ptr<T>(new T);
         }
     }
+
+    Pool(const Pool& other) = delete;
+    Pool(Pool&& other) = delete;
+    Pool& operator=(const Pool& other) = delete;
+    Pool& operator=(Pool&& other) = delete;
 
     std::unique_ptr<T> Claim() {
         if (pool_.size() == 0) {
@@ -411,10 +404,10 @@ private:
 struct OutgoingMessage {
     Header header;
     std::unique_ptr<std::string> message;
-    Pool<std::string>* pool_;
+    Pool<std::string>& pool_;
 
     ~OutgoingMessage() {
-        pool_->Return(std::move(message));
+        pool_.Return(std::move(message));
     }
 };
 
@@ -506,7 +499,6 @@ public:
             common::Tracer::End(trace_event);
             FNET_ASSERT(num_sent != 0);
             if (num_sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                // return {num_sent_during_call, SockResult::WOULD_BLOCK};
                 break;
             }
             FNET_THROW_IF_POSIX_ERR(num_sent);
@@ -552,7 +544,7 @@ public:
             handler({message_body.data(), message_body.size()}, *response);
 
             Header h = MakeHeader(response->size());
-            send_queue_.emplace_back(h, std::move(response), &string_pool_);
+            send_queue_.emplace_back(h, std::move(response), string_pool_);
 
             common::Tracer::End(trace_event);
 
@@ -563,9 +555,7 @@ public:
         MarkConsumed(num_bytes_processed);
     }
 
-    // size_t GetFullSize() const { return buffer_.size(); }
     size_t GetFreeSize() const { return buffer_.size() - buffer_size_; }
-    size_t GetUsedSize() const { return buffer_size_; }
     char* GetWriteBegin() { return buffer_.data() + buffer_size_; }
 
     void MarkConsumed(size_t consumed) {
@@ -579,10 +569,6 @@ public:
         }
         buffer_size_ = remains;
     }
-
-    // Span GetFreeBuffer() {
-    //     return {GetWriteBegin(), GetFreeSize()};
-    // }
 
     Span GetUsedBuffer() {
         return {buffer_.data(), buffer_size_};
@@ -816,10 +802,9 @@ class Client {
     bool header_is_parsed_ = false;
     RingBuffer recv_buffer_;
     std::deque<RequestFuture*> recv_queue_;
-    std::vector<char> buffer_;
 
 public:
-    Client(const std::string& host, int port, size_t buffer_size = 64 * 1024) : recv_buffer_(buffer_size), buffer_(8 * 1024 * 1024) {
+    Client(const std::string& host, int port, size_t buffer_size = 64 * 1024) : recv_buffer_(buffer_size) {
         FNET_ASSERT(recv_buffer_.BufferSize() >= sizeof(Header));
         FNET_THROW_IF_POSIX_ERR(server_socket_fd_ = socket(AF_INET, SOCK_STREAM, 0));
 
@@ -831,7 +816,7 @@ public:
         FNET_THROW_IF_POSIX_ERR(connect(server_socket_fd_, (const struct sockaddr*) &server_sockaddr, sizeof(server_sockaddr)));
         FNET_THROW_IF_POSIX_ERR(SetSockOpt(server_socket_fd_, TCP_NODELAY, IPPROTO_TCP));
         // The socket is blocking by default.
-        // Whenewer we want it in the non blocking mode, we'll use MSG_DONTWAIT
+        // Whenever we want it in the non blocking mode, we'll use MSG_DONTWAIT
     }
 
     ~Client() {
@@ -860,10 +845,10 @@ public:
         }
     }
 
-    std::string DoRequest(Span request) {
+    std::string DoRequest(Span request, std::string dest = {}) {
         FNET_ASSERT(server_socket_fd_ != -1);
 
-        auto rf = ScheduleRequest(request);
+        auto rf = ScheduleRequest(request, std::move(dest));
         rf->Wait();
         FNET_ASSERT(!rf->is_error);
         return std::move(rf->response);
