@@ -10,7 +10,7 @@
 size_t KB = 1024;
 size_t MB = 1024 * KB;
 
-#if 1
+#if 0
 size_t MIN_REQ_SIZE = 256;
 #else
 size_t MIN_REQ_SIZE = 512 * KB;
@@ -48,7 +48,7 @@ int main(int argc, char* argv[]) {
     size_t num_requests = 0;
     size_t bytes_sent = 0;
 
-    std::vector<fnet::RequestFuturePtr> reqs(10);
+    std::vector<fnet::RequestFuturePtr> reqs(3);
     std::vector<std::string> response_buffers(reqs.size());
     size_t req_idx = 0;
     while (IS_RUNNING) {

@@ -22,26 +22,26 @@ TEST(FastNet, Defer) {
 
 TEST(RingBufffer, Ctor) {
     fnet::RingBuffer rb(4096);
-    EXPECT_EQ(rb.Available(), 4096);
-    EXPECT_EQ(rb.BufferSize(), 4096);
-    EXPECT_EQ(rb.ReservedSize(), 0);
+    EXPECT_EQ(rb.GetNumFree(), 4096);
+    EXPECT_EQ(rb.GetNumTotal(), 4096);
+    EXPECT_EQ(rb.GetNumReserved(), 0);
 }
 
 TEST(RingBufffer, Reserve) {
     fnet::RingBuffer rb(4096);
 
     rb.Reserve(4000);
-    EXPECT_EQ(rb.Available(), 96);
-    EXPECT_EQ(rb.BufferSize(), 4096);
-    EXPECT_EQ(rb.ReservedSize(), 4000);
+    EXPECT_EQ(rb.GetNumFree(), 96);
+    EXPECT_EQ(rb.GetNumTotal(), 4096);
+    EXPECT_EQ(rb.GetNumReserved(), 4000);
 }
 
 TEST(RingBufffer, ReserveFull) {
     fnet::RingBuffer rb(4096);
 
     rb.Reserve(4096);
-    EXPECT_EQ(rb.Available(), 0);
-    EXPECT_EQ(rb.ReservedSize(), 4096);
+    EXPECT_EQ(rb.GetNumFree(), 0);
+    EXPECT_EQ(rb.GetNumReserved(), 4096);
 }
 
 TEST(RingBufffer, Release) {
@@ -49,9 +49,9 @@ TEST(RingBufffer, Release) {
 
     rb.Reserve(4000);
     rb.Release(2000);
-    EXPECT_EQ(rb.Available(), 2096);
-    EXPECT_EQ(rb.BufferSize(), 4096);
-    EXPECT_EQ(rb.ReservedSize(), 2000);
+    EXPECT_EQ(rb.GetNumFree(), 2096);
+    EXPECT_EQ(rb.GetNumTotal(), 4096);
+    EXPECT_EQ(rb.GetNumReserved(), 2000);
 }
 
 TEST(RingBufffer, WrapAround) {
@@ -70,5 +70,5 @@ TEST(RingBufffer, WrapAround) {
     EXPECT_EQ(buffer_start[0], '3');
     EXPECT_EQ(buffer_start[1], '4');
     EXPECT_EQ(buffer_start[2], '5');
-    EXPECT_EQ(rb.ReservedSize(), 16);
+    EXPECT_EQ(rb.GetNumReserved(), 16);
 }

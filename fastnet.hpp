@@ -148,6 +148,8 @@ private:
 
 class RingBuffer {
 public:
+    RingBuffer() {}
+
     RingBuffer(size_t size) : buffer_size_(size) {
         FNET_ASSERT(buffer_size_ > 0);
         FNET_ASSERT(buffer_size_ % PAGE_SIZE == 0);
@@ -165,29 +167,49 @@ public:
         FNET_THROW_IF_POSIX_ERR(close(fd));
     }
 
-    ~RingBuffer() {
-        if (buffer_) {
-            // TODO: Log if this fails
-            munmap(buffer_, 2 * buffer_size_);
-            buffer_ = nullptr;
-        }
+    RingBuffer(const RingBuffer&) = delete;
+    RingBuffer(RingBuffer&& other) {
+        buffer_size_ = other.buffer_size_;
+        offset_ = other.offset_;
+        reserved_ = other.reserved_;
+        buffer_ = other.buffer_;
+        
+        other.buffer_ = nullptr;
     }
 
-    size_t BufferSize() const { return buffer_size_; }
-    size_t ReservedSize() const { return reserved_; }
-    size_t Available() const { return buffer_size_ - reserved_; }
+    RingBuffer& operator=(const RingBuffer&) = delete;
+    RingBuffer& operator=(RingBuffer&& other) {
+        Destroy();
+
+        buffer_size_ = other.buffer_size_;
+        offset_ = other.offset_;
+        reserved_ = other.reserved_;
+        buffer_ = other.buffer_;
+        
+        other.buffer_ = nullptr;
+
+        return *this;
+    }
+
+    ~RingBuffer() {
+        Destroy();
+    }
+
+    size_t GetNumTotal() const { return buffer_size_; }
+    size_t GetNumReserved() const { return reserved_; }
+    size_t GetNumFree() const { return buffer_size_ - reserved_; }
 
     char* GetReservedStart() {
         return buffer_ + offset_;
     }
 
-    char* GetAvailableStart() {
+    char* GetFreeStart() {
         return buffer_ + ((offset_ + reserved_) % buffer_size_);
     }
 
     char* Reserve(size_t reserved) {
-        FNET_ASSERT(reserved <= Available());
-        char* res = GetAvailableStart();
+        FNET_ASSERT(reserved <= GetNumFree());
+        char* res = GetFreeStart();
         reserved_ += reserved;
         return res;
     }
@@ -196,6 +218,17 @@ public:
         FNET_ASSERT(released <= reserved_);
         offset_ = (offset_ + released) % buffer_size_;
         reserved_ -= released;
+    }
+
+    void Clear() {
+        reserved_ = 0;
+    }
+
+    void Destroy() {
+        if (buffer_) {
+            FNET_THROW_IF_POSIX_ERR(munmap(buffer_, 2 * buffer_size_));
+            buffer_ = nullptr;
+        }
     }
 
 private:
@@ -413,31 +446,27 @@ struct OutgoingMessage {
 
 using HandleFn = std::function<void(std::string_view, std::string&)>;
 
-class ClientPipe {
+class ClientConnection {
 public:
-    ClientPipe() : buffer_(64 * 1024 * 1024) {}
+    ClientConnection() : buffer_(64 * 1024 * 1024) {}
 
-    ClientPipe(const ClientPipe& other) = delete;
-
-    ClientPipe(ClientPipe&& other) {
+    ClientConnection(const ClientConnection& other) = delete;
+    ClientConnection(ClientConnection&& other) {
         fd_ = other.fd_;
         buffer_ = std::move(other.buffer_);
-        buffer_size_ = other.buffer_size_;
         send_queue_ = std::move(other.send_queue_);
         sent_in_message_ = other.sent_in_message_;
     }
 
-    ~ClientPipe() {
+    ~ClientConnection() {
         Close();
     }
 
-    ClientPipe& operator=(const ClientPipe& other) = delete;
-
-    ClientPipe& operator=(ClientPipe&& other) {
+    ClientConnection& operator=(const ClientConnection& other) = delete;
+    ClientConnection& operator=(ClientConnection&& other) {
         Close();
         fd_ = other.fd_;
         buffer_ = std::move(other.buffer_);
-        buffer_size_ = other.buffer_size_;
         send_queue_ = std::move(other.send_queue_);
         sent_in_message_ = other.sent_in_message_;
         return *this;
@@ -447,10 +476,11 @@ public:
 
     SockResult Recv() {
         size_t num_read_total = 0;
-        while (GetFreeSize()) {
+        while (buffer_.GetNumFree()) {
             auto trace_event = common::Tracer::Begin("recv");
-            int recv_res = recv(fd_, GetWriteBegin(), GetFreeSize(), 0);
+            int recv_res = recv(fd_, buffer_.GetFreeStart(), buffer_.GetNumFree(), 0);
             common::Tracer::End(trace_event);
+
             if (recv_res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 return {num_read_total, SockResult::WOULD_BLOCK};
             }
@@ -458,8 +488,9 @@ public:
             if (recv_res == 0) {
                 return {num_read_total, SockResult::DISCONNECTED};
             }
+
             num_read_total += recv_res;
-            buffer_size_ += recv_res;
+            buffer_.Reserve(recv_res);
         }
         return {num_read_total, SockResult::INSUFFICIENT_BUFFER};
     }
@@ -552,26 +583,11 @@ public:
             num_bytes_processed += full_size;
         }
 
-        MarkConsumed(num_bytes_processed);
-    }
-
-    size_t GetFreeSize() const { return buffer_.size() - buffer_size_; }
-    char* GetWriteBegin() { return buffer_.data() + buffer_size_; }
-
-    void MarkConsumed(size_t consumed) {
-        if (consumed == 0) {
-            return;
-        }
-        FNET_ASSERT(consumed <= buffer_size_);
-        size_t remains = buffer_size_ - consumed;
-        if (remains) {
-            std::memmove(buffer_.data(), buffer_.data() + consumed, remains); //TODO: use mmapped ring buffer
-        }
-        buffer_size_ = remains;
+        buffer_.Release(num_bytes_processed);
     }
 
     Span GetUsedBuffer() {
-        return {buffer_.data(), buffer_size_};
+        return {buffer_.GetReservedStart(), buffer_.GetNumReserved()};
     }
 
     void Close() {
@@ -579,9 +595,9 @@ public:
             FNET_THROW_IF_POSIX_ERR( close(fd_) );
             fd_ = -1;
         }
-        buffer_size_ = 0;
-        sent_in_message_ = 0;
+        buffer_.Clear();
         send_queue_.clear();
+        sent_in_message_ = 0;
     }
 
     void Reset(int fd) {
@@ -593,8 +609,7 @@ public:
 
 private:
     int fd_ = -1;
-    std::vector<char> buffer_;
-    size_t buffer_size_ = 0;
+    RingBuffer buffer_;
     std::deque<OutgoingMessage> send_queue_;
     size_t sent_in_message_ = 0;
     Pool<std::string> string_pool_;
@@ -651,7 +666,7 @@ public:
         constexpr size_t MAX_NUM_EPOLL_EVENTS = 64;
         struct epoll_event epoll_events[MAX_NUM_EPOLL_EVENTS] = {};
 
-        std::vector<ClientPipe> clients(conf_.max_num_clients);
+        std::vector<ClientConnection> clients(conf_.max_num_clients);
         IndexPool client_index_pool(conf_.max_num_clients);
         while (is_running_) {
             auto trace_event = common::Tracer::Begin("epoll_wait");
@@ -685,7 +700,7 @@ public:
                 common::Tracer::End(trace_event);
 
                 size_t client_id = ev.data.u64;
-                ClientPipe& client = clients[client_id];
+                ClientConnection& client = clients[client_id];
 
                 trace_event = common::Tracer::Begin("EPOLLHUP | EPOLLRDHUP | EPOLLERR");
                 if (ev.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)) {
@@ -805,7 +820,7 @@ class Client {
 
 public:
     Client(const std::string& host, int port, size_t buffer_size = 64 * 1024) : recv_buffer_(buffer_size) {
-        FNET_ASSERT(recv_buffer_.BufferSize() >= sizeof(Header));
+        FNET_ASSERT(buffer_size >= sizeof(Header));
         FNET_THROW_IF_POSIX_ERR(server_socket_fd_ = socket(AF_INET, SOCK_STREAM, 0));
 
         sockaddr_in server_sockaddr = {};
@@ -883,7 +898,6 @@ public:
     }
 
     void DoIoCycle() {
-
         bool want_send = send_queue_.size();
         bool want_recv = recv_queue_.size();
 
@@ -953,7 +967,7 @@ public:
         if (pfd.revents & POLLIN) {
             while (recv_queue_.size()) {
                 if (header_is_parsed_) {
-                    FNET_ASSERT(recv_buffer_.ReservedSize() == 0);
+                    FNET_ASSERT(recv_buffer_.GetNumReserved() == 0);
 
                     size_t remains_in_payload = recv_queue_[0]->response.size() - recv_in_payload_;
                     if (remains_in_payload >= 1024) {
@@ -983,8 +997,8 @@ public:
                     }
                 }
 
-                char* avail = recv_buffer_.GetAvailableStart();
-                size_t num_avail = recv_buffer_.Available();
+                char* avail = recv_buffer_.GetFreeStart();
+                size_t num_avail = recv_buffer_.GetNumFree();
 
                 auto trace_event = common::Tracer::Begin("recv");
                 int num_recv = recv(server_socket_fd_, avail, num_avail, MSG_NOSIGNAL | MSG_DONTWAIT);
@@ -1005,7 +1019,7 @@ public:
                 trace_event = common::Tracer::Begin("Deliver responses");
                 while (recv_queue_.size()) {
                     char* reserved = recv_buffer_.GetReservedStart();
-                    size_t reserved_size = recv_buffer_.ReservedSize();
+                    size_t reserved_size = recv_buffer_.GetNumReserved();
 
                     if (!header_is_parsed_) {
                         auto trace_event = common::Tracer::Begin("header_is_parsed_");
