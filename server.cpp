@@ -15,8 +15,8 @@ void OnSigInt(int) {
 }
 
 void Handle(std::string_view message, std::string& dest) {
-    // dest.assign(message);
-    dest.assign("OK");
+    dest.assign(message);
+    // dest.assign("OK");
 }
 
 int main(int argc, char* argv[]) {

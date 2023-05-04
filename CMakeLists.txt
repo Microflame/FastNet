@@ -10,6 +10,7 @@ add_executable(server server.cpp)
 add_executable(client client.cpp)
 add_executable(client_perf_sync client_perf_sync.cpp)
 add_executable(client_perf_async client_perf_async.cpp)
+add_executable(integ_test_async integ_test_async.cpp)
 add_executable(recv_perf experiments/recv_perf.cpp)
 
 add_executable(fastnet_test fastnet_test.cpp)

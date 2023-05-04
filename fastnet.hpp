@@ -301,6 +301,8 @@ struct Header {
     size_t GetFullSize() const { return header_size + payload_size; }
 };
 
+static_assert(sizeof(Header) == 16);
+
 Header MakeHeader(size_t payload_size) {
     Header header {
         .header_size = sizeof(Header),
@@ -437,10 +439,16 @@ private:
 struct OutgoingMessage {
     Header header;
     std::unique_ptr<std::string> message;
-    Pool<std::string>& pool_;
+    Pool<std::string>& pool;
+
+    OutgoingMessage(Header header, std::unique_ptr<std::string> message, Pool<std::string>& pool)
+    : header(header),
+      message(std::move(message)),
+      pool(pool)
+    {}
 
     ~OutgoingMessage() {
-        pool_.Return(std::move(message));
+        pool.Return(std::move(message));
     }
 };
 
@@ -528,7 +536,7 @@ public:
             auto trace_event = common::Tracer::Begin("sendmsg");
             int num_sent = sendmsg(fd_, &msg, MSG_NOSIGNAL);
             common::Tracer::End(trace_event);
-            FNET_ASSERT(num_sent != 0);
+            FNET_ASSERT(num_sent != 0 || msg.msg_iovlen == 0 || msg.msg_iov[0].iov_len == 0);
             if (num_sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 break;
             }
@@ -539,7 +547,7 @@ public:
             num_sent_during_call += num_sent;
             sent_in_message_ += num_sent;
 
-            while (num_sent && int(iovecs[num_iovecs_sent].iov_len) <= num_sent) {
+            while (num_iovecs_sent < iovecs.size() && int(iovecs[num_iovecs_sent].iov_len) <= num_sent) {
                 num_sent -= iovecs[num_iovecs_sent].iov_len;
                 num_iovecs_sent += 1;
             }
