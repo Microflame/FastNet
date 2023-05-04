@@ -897,9 +897,11 @@ public:
             server_socket_fd_ = -1;
         }
 
-        for (RequestFuture* rf: recv_queue_) {
-            rf->SetError();
-        }
+        // TODO: this may cause use-after-free if user has already
+        // discarded this request. Use intrusive ptr to count refs?
+        // for (RequestFuture* rf: recv_queue_) {
+        //     rf->SetError();
+        // }
 
         send_queue_.clear();
         recv_queue_.clear();
