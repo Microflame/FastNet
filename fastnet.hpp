@@ -238,6 +238,120 @@ private:
     char* buffer_ = nullptr;
 };
 
+template <typename T>
+class PooledObject;
+
+template <typename T>
+class ObjectPool;
+
+template <typename T>
+class PooledObjectRef {
+public:
+    PooledObjectRef() = delete;
+
+    PooledObjectRef(T& payload) noexcept :
+        payload_(&payload) {
+        IncRef();
+    }
+
+    PooledObjectRef(const PooledObjectRef& other) noexcept {
+        payload_ = other.payload_;
+        IncRef();
+    }
+
+    PooledObjectRef(PooledObjectRef&& other) noexcept {
+        payload_ = other.payload_;
+        IncRef();
+    }
+
+    ~PooledObjectRef() {
+        Reset();
+    }
+
+    PooledObjectRef& operator=(const PooledObjectRef& other) {
+        Reset();
+        payload_ = other.payload_;
+        IncRef();
+    }
+
+    PooledObjectRef& operator=(PooledObjectRef&& other) {
+        Reset();
+        payload_ = other.payload_;
+        IncRef();
+    }
+
+    T& Get() { return *payload_; }
+
+private:
+    T* payload_ = nullptr;
+
+    void IncRef() {
+        payload_->ref_count_ += 1;
+    }
+
+    void Reset() {
+        FNET_ASSERT(payload_->ref_count_ > 0);
+
+        payload_->ref_count_ -= 1;
+
+        if (payload_->ref_count_ == 0) {
+            delete payload_;
+        } else if (payload_->ref_count_ == 1 && payload_->pool_) {
+            // The only reference is from pool_.all, so return to pool.free
+            payload_->pool_->Return(*payload_);
+        }
+    }
+};
+
+template<typename T>
+struct PooledObject {
+    size_t ref_count_ = 0;
+    ObjectPool<T>* pool_ = nullptr;
+};
+
+template <typename T>
+class ObjectPool {
+public:
+    ObjectPool() = delete;
+    ObjectPool(const ObjectPool& other) = delete;
+    ObjectPool(ObjectPool&& other) = delete;
+    ObjectPool& operator=(const ObjectPool& other) = delete;
+    ObjectPool& operator=(ObjectPool&& other) = delete;
+
+    ObjectPool(std::function<T()> factory) :
+        factory_(std::move(factory)) {
+    }
+
+    ~ObjectPool() {
+        for (PooledObjectRef<T>& obj: all_objects_) {
+            obj.Get().pool_ = nullptr;
+        }
+    }
+
+    PooledObjectRef<T> GetOrCreate() {
+        if (free_objects_.size()) {
+            PooledObjectRef<T> res = free_objects_.back();
+            free_objects_.pop_back();
+            return res;
+        }
+
+        T* res = new T(factory_());
+        res->pool_ = this;
+
+        all_objects_.emplace_back(*res);
+        return all_objects_.back();
+    }
+
+    void Return(T& object) {
+        free_objects_.emplace_back(object);
+    }
+
+private:
+    std::vector<PooledObjectRef<T>> all_objects_;
+    std::vector<PooledObjectRef<T>> free_objects_;
+    std::function<T()> factory_;
+};
+
 // </DataStructs>
 
 // <POSIX>
