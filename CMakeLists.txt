@@ -4,17 +4,19 @@ project(FastNet)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -g -Wall -pedantic -Wno-unused-function -Wno-format-security")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -static-libasan -fno-omit-frame-pointer -g -Wall -pedantic -Wno-unused-function -Wno-format-security")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -g -Wall -pedantic -Wno-unused-function -Wno-format-security")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -static-libasan -fno-omit-frame-pointer -g -Wall -pedantic -Wno-unused-function -Wno-format-security")
 
-add_executable(server server.cpp)
-add_executable(client client.cpp)
-add_executable(client_perf_sync client_perf_sync.cpp)
-add_executable(client_perf_async client_perf_async.cpp)
-add_executable(integ_test_async integ_test_async.cpp)
+include_directories(.)
+
+add_executable(server utils/server.cpp)
+add_executable(client utils/client.cpp)
+add_executable(client_perf_sync utils/client_perf_sync.cpp)
+add_executable(client_perf_async utils/client_perf_async.cpp)
 add_executable(recv_perf experiments/recv_perf.cpp)
 
-add_executable(fastnet_test fastnet_test.cpp)
+add_executable(integ_test_async test/integ_test_async.cpp)
+add_executable(fastnet_test test/fastnet_test.cpp)
 
 
 include(FetchContent)
