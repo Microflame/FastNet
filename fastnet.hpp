@@ -29,8 +29,6 @@
 namespace fnet
 {
 
-// <Macros>
-
 #define FNET_CONCAT_IMPL(a, b) a ## b
 #define FNET_CONCAT(a, b) FNET_CONCAT_IMPL(a, b)
 
@@ -91,15 +89,9 @@ void DbgSend(size_t size) {
 
 #endif
 
-// </Macros>
-
-// <Constants>
 
 static const size_t PAGE_SIZE = getpagesize();
 
-// </Constants>
-
-// <DataStructs>
 
 template <typename F> 
 struct DeferImpl {
@@ -239,122 +231,29 @@ private:
 };
 
 template <typename T>
-class PooledObject;
-
-template <typename T>
-class ObjectPool;
-
-template <typename T>
-class PooledObjectRef {
-public:
-    PooledObjectRef() = delete;
-
-    PooledObjectRef(T& payload) noexcept :
-        payload_(&payload) {
-        IncRef();
-    }
-
-    PooledObjectRef(const PooledObjectRef& other) noexcept {
-        payload_ = other.payload_;
-        IncRef();
-    }
-
-    PooledObjectRef(PooledObjectRef&& other) noexcept {
-        payload_ = other.payload_;
-        IncRef();
-    }
-
-    ~PooledObjectRef() {
-        Reset();
-    }
-
-    PooledObjectRef& operator=(const PooledObjectRef& other) {
-        Reset();
-        payload_ = other.payload_;
-        IncRef();
-    }
-
-    PooledObjectRef& operator=(PooledObjectRef&& other) {
-        Reset();
-        payload_ = other.payload_;
-        IncRef();
-    }
-
-    T& Get() { return *payload_; }
-
-private:
-    T* payload_ = nullptr;
-
-    void IncRef() {
-        payload_->ref_count_ += 1;
-    }
-
-    void Reset() {
-        FNET_ASSERT(payload_->ref_count_ > 0);
-
-        payload_->ref_count_ -= 1;
-
-        if (payload_->ref_count_ == 0) {
-            delete payload_;
-        } else if (payload_->ref_count_ == 1 && payload_->pool_) {
-            // The only reference is from pool_.all, so return to pool.free
-            payload_->pool_->Return(*payload_);
-        }
-    }
-};
-
-template<typename T>
-struct PooledObject {
-    size_t ref_count_ = 0;
-    ObjectPool<T>* pool_ = nullptr;
-};
-
-template <typename T>
-class ObjectPool {
-public:
-    ObjectPool() = delete;
-    ObjectPool(const ObjectPool& other) = delete;
-    ObjectPool(ObjectPool&& other) = delete;
-    ObjectPool& operator=(const ObjectPool& other) = delete;
-    ObjectPool& operator=(ObjectPool&& other) = delete;
+struct ObjectPool {
+    std::vector<T> available_;
+    std::function<T()> factory_;
 
     ObjectPool(std::function<T()> factory) :
         factory_(std::move(factory)) {
     }
 
-    ~ObjectPool() {
-        for (PooledObjectRef<T>& obj: all_objects_) {
-            obj.Get().pool_ = nullptr;
-        }
-    }
-
-    PooledObjectRef<T> GetOrCreate() {
-        if (free_objects_.size()) {
-            PooledObjectRef<T> res = free_objects_.back();
-            free_objects_.pop_back();
-            return res;
+    T Claim() {
+        if (available_.size() == 0) {
+            return factory_();
         }
 
-        T* res = new T(factory_());
-        res->pool_ = this;
-
-        all_objects_.emplace_back(*res);
-        return all_objects_.back();
+        T res = std::move(available_.back());
+        available_.pop_back();
+        return res;
     }
 
-    void Return(T& object) {
-        free_objects_.emplace_back(object);
+    void Return(T&& object) {
+        available_.emplace_back(std::move(object));
     }
-
-private:
-    std::vector<PooledObjectRef<T>> all_objects_;
-    std::vector<PooledObjectRef<T>> free_objects_;
-    std::function<T()> factory_;
 };
 
-// </DataStructs>
-
-// <POSIX>
 
 std::string ErrnoToString(int errnum) {
     char ERROR_BUFFER[1024] = {};
@@ -388,7 +287,7 @@ int ModEpollEvent(int epoll_fd, int target_fd, int events_mask, uint64_t data) {
     return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, target_fd, &ev);
 }
 
-in_addr_t Resolve(const char* hostname) {
+in_addr_t ResolveHostname(const char* hostname) {
     addrinfo* getaddrinfo_res = nullptr;
     addrinfo hints = {};
     hints.ai_family = AF_INET;
@@ -405,23 +304,26 @@ in_addr_t Resolve(const char* hostname) {
     return res;
 }
 
-// </POSIX>
 
+/**
+ * |      MESSAGE       |
+ * | HEADER |  PAYLOAD  |
+*/
 struct Header {
-    uint16_t header_size;
-    uint8_t header_version;
-    uint64_t payload_size;
+    uint8_t version;
+    uint8_t reserved_1_;
+    uint16_t reserved_2_;
+    uint32_t payload_size;
 
-    size_t GetFullSize() const { return header_size + payload_size; }
+    size_t GetMessageSize() const { return sizeof(Header) + payload_size; }
 };
 
-static_assert(sizeof(Header) == 16);
+static_assert(sizeof(Header) == 8);
 
-Header MakeHeader(size_t payload_size) {
+Header MakeHeader(uint32_t payload_size) {
     Header header {
-        .header_size = sizeof(Header),
-        .header_version = 0,
-        .payload_size = payload_size
+        .version = 0,
+        .payload_size = payload_size,
     };
     return header;
 }
@@ -482,74 +384,6 @@ SockResult RecvFixed(int fd, char* data, size_t size) {
     return {size, SockResult::OK};
 }
 
-template <typename T>
-class Pool {
-public:
-    Pool() : Pool(1) {}
-    Pool(size_t initial_size) {
-        FNET_ASSERT(initial_size > 0);
-        pool_.resize(initial_size);
-        for (size_t i = 0; i < initial_size; i++) {
-            pool_[i] = std::unique_ptr<T>(new T);
-        }
-    }
-
-    Pool(const Pool& other) = delete;
-    Pool(Pool&& other) = delete;
-    Pool& operator=(const Pool& other) = delete;
-    Pool& operator=(Pool&& other) = delete;
-
-    std::unique_ptr<T> Claim() {
-        if (pool_.size() == 0) {
-            size_t to_add = pool_.capacity();
-            pool_.resize(to_add);
-            for (size_t i = 0; i < to_add; i++) {
-                pool_[i] = std::unique_ptr<T>(new T);
-            }
-        }
-
-        std::unique_ptr<T> res = std::move(pool_.back());
-        pool_.pop_back();
-        return res;
-    }
-
-    void Return(std::unique_ptr<T> value) {
-        pool_.emplace_back(std::move(value));
-    }
-
-private:
-    std::vector<std::unique_ptr<T>> pool_;
-};
-
-class IndexPool {
-public:
-    IndexPool(size_t size) : pool_(size), num_available_(size) {
-        for (size_t i = 0; i < size; i++) {
-            pool_[i] = size - i - 1;
-        }
-    }
-
-    size_t NumAvailable() {
-        return num_available_;
-    }
-
-    size_t Claim() {
-        FNET_ASSERT(num_available_);
-        num_available_ -= 1;
-        return pool_[num_available_];
-    }
-
-    void Return(size_t value) {
-        FNET_ASSERT(num_available_ < pool_.size());
-        pool_[num_available_] = value;
-        num_available_ += 1;
-    }
-
-private:
-    std::vector<size_t> pool_;
-    size_t num_available_;
-};
-
 struct OutgoingMessage {
     Header header;
     std::unique_ptr<std::string> message;
@@ -570,11 +404,12 @@ using HandleFn = std::function<void(std::string_view, std::string&)>;
 
 class ClientConnection {
 public:
-    ClientConnection() : buffer_(64 * 1024 * 1024) {}
+    ClientConnection(size_t buffer_size) : buffer_(buffer_size) {}
 
     ClientConnection(const ClientConnection& other) = delete;
     ClientConnection(ClientConnection&& other) {
         fd_ = other.fd_;
+        other.fd_ = -1;
         buffer_ = std::move(other.buffer_);
         send_queue_ = std::move(other.send_queue_);
         sent_in_message_ = other.sent_in_message_;
@@ -588,6 +423,7 @@ public:
     ClientConnection& operator=(ClientConnection&& other) {
         Close();
         fd_ = other.fd_;
+        other.fd_ = -1;
         buffer_ = std::move(other.buffer_);
         send_queue_ = std::move(other.send_queue_);
         sent_in_message_ = other.sent_in_message_;
@@ -674,7 +510,7 @@ public:
 
         for (size_t i = 0; i < num_iovecs_sent / 2; i++) {
             FNET_DBG_SEND(send_queue_.front().header.payload_size);
-            sent_in_message_ -= send_queue_.front().header.GetFullSize();
+            sent_in_message_ -= send_queue_.front().header.GetMessageSize();
             send_queue_.pop_front();
         }
         return {num_sent_during_call, SockResult::OK};
@@ -685,13 +521,13 @@ public:
         size_t num_bytes_processed = 0;
         while (data.size() >= sizeof(Header)) {
             Header& header = *( (Header*) data.data() );
-            size_t full_size = header.GetFullSize();
+            size_t full_size = header.GetMessageSize();
             if (data.size() < full_size) {
                 break;
             }
 
             FNET_DBG_RECV(header.payload_size);
-            Span message_body = data.subspan(header.header_size, header.payload_size);
+            Span message_body = data.subspan(sizeof(Header), header.payload_size);
             auto trace_event = common::Tracer::Begin("Schedule message");
             std::unique_ptr<std::string> response = string_pool_.Claim();
             handler({message_body.data(), message_body.size()}, *response);
@@ -773,7 +609,7 @@ public:
         sockaddr_in server_socked_addr = {};
         server_socked_addr.sin_family = AF_INET;
         server_socked_addr.sin_port = htons(conf_.port);
-        server_socked_addr.sin_addr.s_addr = Resolve(conf_.host.c_str());
+        server_socked_addr.sin_addr.s_addr = ResolveHostname(conf_.host.c_str());
 
         FNET_THROW_IF_POSIX_ERR(bind(server_socked_fd, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
 
@@ -948,7 +784,7 @@ public:
         sockaddr_in server_sockaddr = {};
         server_sockaddr.sin_family = AF_INET;
         server_sockaddr.sin_port = htons(port);
-        server_sockaddr.sin_addr.s_addr = Resolve(host.c_str());
+        server_sockaddr.sin_addr.s_addr = ResolveHostname(host.c_str());
 
         FNET_THROW_IF_POSIX_ERR(connect(server_socket_fd_, (const struct sockaddr*) &server_sockaddr, sizeof(server_sockaddr)));
         FNET_THROW_IF_POSIX_ERR(SetSockOpt(server_socket_fd_, TCP_NODELAY, IPPROTO_TCP));
