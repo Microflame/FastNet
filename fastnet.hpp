@@ -89,6 +89,11 @@ void DbgSend(size_t size) {
 
 #endif
 
+// TODO: Check if this works
+#define FNET_TRACE_SCOPE(name) \
+    size_t FNET_CONCAT(FNET_trace_scope_, __LINE__) = common::Tracer::Begin(name); \
+    FNET_DEFER { common::Tracer::End(FNET_CONCAT(FNET_trace_scope_, __LINE__)); }
+
 
 static const size_t PAGE_SIZE = getpagesize();
 
@@ -233,15 +238,15 @@ private:
 template <typename T>
 struct ObjectPool {
     std::vector<T> available_;
-    std::function<T()> factory_;
-
-    ObjectPool(std::function<T()> factory) :
-        factory_(std::move(factory)) {
-    }
 
     T Claim() {
+        return Claim([]() -> T { return {}; })
+    }
+
+    template <typename F>
+    T Claim(F& factory) {
         if (available_.size() == 0) {
-            return factory_();
+            return factory();
         }
 
         T res = std::move(available_.back());
@@ -304,6 +309,14 @@ in_addr_t ResolveHostname(const char* hostname) {
     return res;
 }
 
+sockaddr_in MakeSockaddr(const char* hostname, int port) {
+    sockaddr_in sockaddr = {};
+    sockaddr.sin_family = AF_INET;
+    sockaddr.sin_port = htons(port);
+    sockaddr.sin_addr.s_addr = ResolveHostname(hostname);
+    return sockaddr;
+}
+
 
 /**
  * |      MESSAGE       |
@@ -321,10 +334,8 @@ struct Header {
 static_assert(sizeof(Header) == 8);
 
 Header MakeHeader(uint32_t payload_size) {
-    Header header {
-        .version = 0,
-        .payload_size = payload_size,
-    };
+    Header header = {};
+    header.payload_size = payload_size;
     return header;
 }
 
@@ -386,27 +397,26 @@ SockResult RecvFixed(int fd, char* data, size_t size) {
 
 struct OutgoingMessage {
     Header header;
-    std::unique_ptr<std::string> message;
-    Pool<std::string>& pool;
+    std::string message;
 
-    OutgoingMessage(Header header, std::unique_ptr<std::string> message, Pool<std::string>& pool)
+    OutgoingMessage(Header header, std::string message)
     : header(header),
-      message(std::move(message)),
-      pool(pool)
+      message(std::move(message))
     {}
-
-    ~OutgoingMessage() {
-        pool.Return(std::move(message));
-    }
 };
 
 using HandleFn = std::function<void(std::string_view, std::string&)>;
 
 class ClientConnection {
 public:
+    ClientConnection() = delete;
+    ClientConnection(const ClientConnection& other) = delete;
+    ClientConnection& operator=(const ClientConnection& other) = delete;
+
     ClientConnection(size_t buffer_size) : buffer_(buffer_size) {}
 
-    ClientConnection(const ClientConnection& other) = delete;
+    // TODO: Fix this code duplication.
+    // There is not real need in move ctors
     ClientConnection(ClientConnection&& other) {
         fd_ = other.fd_;
         other.fd_ = -1;
@@ -419,7 +429,6 @@ public:
         Close();
     }
 
-    ClientConnection& operator=(const ClientConnection& other) = delete;
     ClientConnection& operator=(ClientConnection&& other) {
         Close();
         fd_ = other.fd_;
@@ -430,14 +439,17 @@ public:
         return *this;
     }
 
-    bool HasPendingOutgoingMessages() const { return send_queue_.size(); }
+    size_t GetSendQueueSize() const { return send_queue_.size(); }
 
     SockResult Recv() {
+        FNET_TRACE_SCOPE("ClientConnection::Recv()");
         size_t num_read_total = 0;
         while (buffer_.GetNumFree()) {
-            auto trace_event = common::Tracer::Begin("recv");
-            int recv_res = recv(fd_, buffer_.GetFreeStart(), buffer_.GetNumFree(), 0);
-            common::Tracer::End(trace_event);
+            int recv_res = 0;
+            {
+                FNET_TRACE_SCOPE("recv");
+                recv_res = recv(fd_, buffer_.GetFreeStart(), buffer_.GetNumFree(), 0);
+            }
 
             if (recv_res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 return {num_read_total, SockResult::WOULD_BLOCK};
@@ -454,18 +466,19 @@ public:
     }
 
     SockResult Send() {
+        FNET_TRACE_SCOPE("ClientConnection::Send()");
         if (send_queue_.size() == 0) {
             return {0, SockResult::OK};
         }
 
-        auto trace_event = common::Tracer::Begin("Send:BuildIovecs");
+        auto trace_event_build_iovecs = common::Tracer::Begin("Send:BuildIovecs");
         size_t num_sent_during_call = 0;
         std::vector<iovec> iovecs(2 * send_queue_.size());
         for (size_t i = 0; i < send_queue_.size(); ++i) {
             iovecs[2 * i].iov_base = &send_queue_[i].header;
             iovecs[2 * i].iov_len = sizeof(Header);
-            iovecs[2 * i + 1].iov_base = send_queue_[i].message->data();
-            iovecs[2 * i + 1].iov_len = send_queue_[i].message->size();
+            iovecs[2 * i + 1].iov_base = send_queue_[i].message.data();
+            iovecs[2 * i + 1].iov_len = send_queue_[i].message.size();
         }
 
         size_t num_iovecs_sent = 0;
@@ -476,16 +489,16 @@ public:
         }
         iovecs[num_iovecs_sent].iov_base = (char*) iovecs[num_iovecs_sent].iov_base + sent_in_iovec;
         iovecs[num_iovecs_sent].iov_len -= sent_in_iovec;
-        common::Tracer::End(trace_event);
+        common::Tracer::End(trace_event_build_iovecs);
 
         while (iovecs.size() > num_iovecs_sent) {
             msghdr msg = {
                 .msg_iov = &iovecs[num_iovecs_sent],
                 .msg_iovlen = iovecs.size() - num_iovecs_sent,
             };
-            auto trace_event = common::Tracer::Begin("sendmsg");
+            auto trace_event_sendmsg = common::Tracer::Begin("sendmsg");
             int num_sent = sendmsg(fd_, &msg, MSG_NOSIGNAL);
-            common::Tracer::End(trace_event);
+            common::Tracer::End(trace_event_sendmsg);
             FNET_ASSERT(num_sent != 0 || msg.msg_iovlen == 0 || msg.msg_iov[0].iov_len == 0);
             if (num_sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 break;
@@ -511,12 +524,14 @@ public:
         for (size_t i = 0; i < num_iovecs_sent / 2; i++) {
             FNET_DBG_SEND(send_queue_.front().header.payload_size);
             sent_in_message_ -= send_queue_.front().header.GetMessageSize();
+            string_pool_.Return(std::move(send_queue_.front().message));
             send_queue_.pop_front();
         }
         return {num_sent_during_call, SockResult::OK};
     }
 
     void ProcessIncomingTraffic(const HandleFn& handler) {
+        FNET_TRACE_SCOPE("ClientConnection::ProcessIncomingTraffic()");
         Span data = GetUsedBuffer();
         size_t num_bytes_processed = 0;
         while (data.size() >= sizeof(Header)) {
@@ -528,14 +543,14 @@ public:
 
             FNET_DBG_RECV(header.payload_size);
             Span message_body = data.subspan(sizeof(Header), header.payload_size);
-            auto trace_event = common::Tracer::Begin("Schedule message");
-            std::unique_ptr<std::string> response = string_pool_.Claim();
-            handler({message_body.data(), message_body.size()}, *response);
+            auto trace_event_schedule_msg = common::Tracer::Begin("Schedule message");
+            std::string response = string_pool_.Claim();
+            handler({message_body.data(), message_body.size()}, response);
 
-            Header h = MakeHeader(response->size());
+            Header h = MakeHeader(response.size());
             send_queue_.emplace_back(h, std::move(response), string_pool_);
 
-            common::Tracer::End(trace_event);
+            common::Tracer::End(trace_event_schedule_msg);
 
             data = data.subspan(full_size);
             num_bytes_processed += full_size;
@@ -545,12 +560,12 @@ public:
     }
 
     Span GetUsedBuffer() {
-        return {buffer_.GetReservedStart(), buffer_.GetNumReserved()};
+        return { buffer_.GetReservedStart(), buffer_.GetNumReserved() };
     }
 
     void Close() {
         if (fd_ != -1) {
-            FNET_THROW_IF_POSIX_ERR( close(fd_) );
+            FNET_THROW_IF_POSIX_ERR(close(fd_));
             fd_ = -1;
         }
         buffer_.Clear();
@@ -558,9 +573,9 @@ public:
         sent_in_message_ = 0;
     }
 
-    void Reset(int fd) {
+    void Reset(int client_fd, int epoll_fd, uint64_t client_id) {
         Close();
-        fd_ = fd;
+        fd_ = client_fd;
     }
 
     int Fd() const { return fd_; }
@@ -570,7 +585,7 @@ private:
     RingBuffer buffer_;
     std::deque<OutgoingMessage> send_queue_;
     size_t sent_in_message_ = 0;
-    Pool<std::string> string_pool_;
+    ObjectPool<std::string> string_pool_;
 };
 
 
@@ -578,6 +593,7 @@ struct ServerConfig {
     std::string host;
     int port = -1;
     size_t max_num_clients = 128;
+    size_t client_recv_buffer_size = 16 * 1024;
     bool reuse_addr = false;
 };
 
@@ -606,13 +622,9 @@ public:
             FNET_THROW_IF_POSIX_ERR(SetSockOpt(server_socked_fd, SO_REUSEADDR, SOL_SOCKET));
         }
 
-        sockaddr_in server_socked_addr = {};
-        server_socked_addr.sin_family = AF_INET;
-        server_socked_addr.sin_port = htons(conf_.port);
-        server_socked_addr.sin_addr.s_addr = ResolveHostname(conf_.host.c_str());
+        sockaddr_in server_socked_addr = MakeSockaddr(conf_.host.c_str(), conf_.port);
 
         FNET_THROW_IF_POSIX_ERR(bind(server_socked_fd, (const struct sockaddr*) &server_socked_addr, sizeof(server_socked_addr)));
-
         FNET_THROW_IF_POSIX_ERR(listen(server_socked_fd, 16));
 
         int epoll_fd = 0;
@@ -624,94 +636,99 @@ public:
         constexpr size_t MAX_NUM_EPOLL_EVENTS = 64;
         struct epoll_event epoll_events[MAX_NUM_EPOLL_EVENTS] = {};
 
-        std::vector<ClientConnection> clients(conf_.max_num_clients);
-        IndexPool client_index_pool(conf_.max_num_clients);
-        while (is_running_) {
-            auto trace_event = common::Tracer::Begin("epoll_wait");
-            int epoll_wait_res = epoll_wait(epoll_fd, epoll_events, MAX_NUM_EPOLL_EVENTS, -1);
-            common::Tracer::End(trace_event);
-            if (errno == EINTR) continue;
-            FNET_THROW_IF_POSIX_ERR(epoll_wait_res);
+        std::vector<ClientConnection> client_connections;
+        std::vector<size_t> free_connections;
 
-            for (int i = 0; i < epoll_wait_res; i++) {
+        auto close_client_now = [epoll_fd, &free_connections](ClientConnection& client, size_t client_id) {
+            FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
+            free_connections.push_back(client_id);
+            client.Close();
+        };
+
+        while (is_running_) {
+            int num_epoll_events = 0;
+            {
+                FNET_TRACE_SCOPE("epoll_wait");
+                num_epoll_events = epoll_wait(epoll_fd, epoll_events, MAX_NUM_EPOLL_EVENTS, -1);
+                if (errno == EINTR) continue;
+                FNET_THROW_IF_POSIX_ERR(num_epoll_events);
+            }
+
+            for (int i = 0; i < num_epoll_events; i++) {
                 struct epoll_event& ev = epoll_events[i];
 
-                auto trace_event = common::Tracer::Begin("Accept");
                 if (ev.data.u64 == uint64_t(-1)) {
+                    FNET_TRACE_SCOPE("Accept");
                     int client_fd = 0;
                     FNET_THROW_IF_POSIX_ERR(client_fd = accept(server_socked_fd, nullptr, nullptr));
-                    if (!client_index_pool.NumAvailable()) {
-                        FNET_THROW_IF_POSIX_ERR(close(client_fd));
-                        fprintf(stderr, "Client rejected.");
-                        common::Tracer::End(trace_event);
-                        continue;
-                    }
 
+                    size_t client_id = -1;
+                    if (free_connections.size() == 0) {
+                        if (client_connections.size() == conf_.max_num_clients) {
+                            FNET_THROW_IF_POSIX_ERR(close(client_fd));
+                            fprintf(stderr, "Client rejected.");
+                            continue;
+                        }
+
+                        client_id = client_connections.size();
+                        client_connections.emplace_back(conf_.client_recv_buffer_size);
+                    } else {
+                        client_id = free_connections.back();
+                        free_connections.pop_back();
+                    }
+                    FNET_ASSERT(client_id != -1);
+                    
+                    client_connections[client_id].Reset(client_fd, epoll_fd, client_id);
+                    
                     FNET_THROW_IF_POSIX_ERR(SetSockOpt(client_fd, TCP_NODELAY, IPPROTO_TCP));
                     FNET_THROW_IF_POSIX_ERR(SetFileFlag(client_fd, O_NONBLOCK));
-                    size_t client_id = client_index_pool.Claim();
-                    clients[client_id].Reset(client_fd);
                     FNET_THROW_IF_POSIX_ERR(AddEpollEvent(epoll_fd, client_fd, EPOLLIN | EPOLLRDHUP | EPOLLHUP, client_id));
-                    common::Tracer::End(trace_event);
                     continue;
                 }
-                common::Tracer::End(trace_event);
 
                 size_t client_id = ev.data.u64;
-                ClientConnection& client = clients[client_id];
+                ClientConnection& client = client_connections[client_id];
 
-                trace_event = common::Tracer::Begin("EPOLLHUP | EPOLLRDHUP | EPOLLERR");
-                if (ev.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)) {
-                    FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
-                    client_index_pool.Return(client_id);
-                    client.Close();
-                    common::Tracer::End(trace_event);
+                
+                if (ev.events & (EPOLLHUP | EPOLLERR)) {
+                    FNET_TRACE_SCOPE("EPOLLHUP | EPOLLERR");
+                    close_client_now(client, client_id);
                     continue;
                 }
-                common::Tracer::End(trace_event);
 
-                trace_event = common::Tracer::Begin("EPOLLIN");
-                bool had_pending_out = client.HasPendingOutgoingMessages();
+                bool had_pending_out = client.GetSendQueueSize();
                 if (ev.events & EPOLLIN) {
-                    auto trace_client_recv = common::Tracer::Begin("client.Recv()");
+                    FNET_TRACE_SCOPE("EPOLLIN");
                     SockResult res = client.Recv();
-                    common::Tracer::End(trace_client_recv);
                     if (res.error == SockResult::BROKEN || res.error == SockResult::DISCONNECTED) {
-                        FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
-                        client_index_pool.Return(client_id);
-                        client.Close();
-                        common::Tracer::End(trace_event);
+                        close_client_now(client, client_id);
                         continue;
                     }
 
-                    auto trace_ProcessIncomingTraffic = common::Tracer::Begin("ProcessIncomingTraffic");
                     client.ProcessIncomingTraffic(handler);
-                    common::Tracer::End(trace_ProcessIncomingTraffic);
                 }
-                bool writes_appeared = !had_pending_out && client.HasPendingOutgoingMessages();
-                common::Tracer::End(trace_event);
+                bool writes_appeared = !had_pending_out && client.GetSendQueueSize();
 
-                trace_event = common::Tracer::Begin("EPOLLOUT");
                 if (writes_appeared || (ev.events & EPOLLOUT)) {
                     SockResult res = client.Send();
                     if (res.error == SockResult::BROKEN) {
-                        FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
-                        client_index_pool.Return(client_id);
-                        client.Close();
-                        common::Tracer::End(trace_event);
+                        close_client_now(client, client_id);
                         continue;
                     }
                 }
-                common::Tracer::End(trace_event);
 
-                trace_event = common::Tracer::Begin("ModEpollEvents");
+                if ((ev.events & EPOLLRDHUP) && !client.GetSendQueueSize()) {
+                    close_client_now(client, client_id);
+                    continue;
+                }
+
+                FNET_TRACE_SCOPE("ModEpollEvents");
                 int event_mask = EPOLLIN | EPOLLRDHUP | EPOLLHUP;
-                if (client.HasPendingOutgoingMessages()) {
+                if (client.GetSendQueueSize()) {
                     event_mask |= EPOLLOUT;
                 }
 
                 FNET_THROW_IF_POSIX_ERR(ModEpollEvent(epoll_fd, client.Fd(), event_mask, client_id));
-                common::Tracer::End(trace_event);
             }
         }
     }
@@ -781,10 +798,7 @@ public:
         FNET_ASSERT(buffer_size >= sizeof(Header));
         FNET_THROW_IF_POSIX_ERR(server_socket_fd_ = socket(AF_INET, SOCK_STREAM, 0));
 
-        sockaddr_in server_sockaddr = {};
-        server_sockaddr.sin_family = AF_INET;
-        server_sockaddr.sin_port = htons(port);
-        server_sockaddr.sin_addr.s_addr = ResolveHostname(host.c_str());
+        sockaddr_in server_sockaddr = MakeSockaddr(host.c_str(), port);
 
         FNET_THROW_IF_POSIX_ERR(connect(server_socket_fd_, (const struct sockaddr*) &server_sockaddr, sizeof(server_sockaddr)));
         FNET_THROW_IF_POSIX_ERR(SetSockOpt(server_socket_fd_, TCP_NODELAY, IPPROTO_TCP));
