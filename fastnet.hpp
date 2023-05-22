@@ -26,8 +26,7 @@
 
 // #define FNET_DEBUG 1
 
-namespace fnet
-{
+namespace fnet {
 
 #define FNET_CONCAT_IMPL(a, b) a ## b
 #define FNET_CONCAT(a, b) FNET_CONCAT_IMPL(a, b)
@@ -740,19 +739,24 @@ void RunServer(ServerConfig conf, HandleFn handle) {
 
 class Client;
 
-struct RequestFuture
-{
+struct RequestFutureImpl {
     bool is_finished = {};
     bool is_error = {};
     std::string response = {};
-    Client* const client = {};
+    std::shared_ptr<ObjectPool<std::string>> string_pool_;
 
-    RequestFuture(Client* client) : client(client) {}
+    RequestFutureImpl(std::shared_ptr<ObjectPool<std::string>> string_pool) :
+        string_pool_(std::move(string_pool)),
+        response(string_pool_->Claim()) {}
 
-    RequestFuture(const RequestFuture&) = delete;
-    RequestFuture(RequestFuture&&) = delete;
-    RequestFuture& operator=(const RequestFuture&) = delete;
-    RequestFuture& operator=(RequestFuture&&) = delete;
+    RequestFutureImpl(const RequestFutureImpl&) = delete;
+    RequestFutureImpl(RequestFutureImpl&&) = delete;
+    RequestFutureImpl& operator=(const RequestFutureImpl&) = delete;
+    RequestFutureImpl& operator=(RequestFutureImpl&&) = delete;
+
+    ~RequestFutureImpl() {
+        string_pool_->Return(std::move(response));
+    }
 
     std::string GetResult() {
         Wait();
@@ -761,20 +765,18 @@ struct RequestFuture
 
     void Wait();
 
-    void SetSuccessful()
-    {
+    void SetSuccessful() {
         is_finished = true;
         FNET_DBG_RECV(response.size());
     }
 
-    void SetError()
-    {
+    void SetError() {
         is_error = true;
         is_finished = true;
     }
 };
 
-using RequestFuturePtr = std::unique_ptr<RequestFuture>;
+using RequestFuturePtr = std::unique_ptr<RequestFutureImpl>;
 
 struct HeaderSpan {
     Header header;
@@ -791,7 +793,7 @@ class Client {
     size_t recv_in_payload_ = 0;
     bool header_is_parsed_ = false;
     RingBuffer recv_buffer_;
-    std::deque<RequestFuture*> recv_queue_;
+    std::deque<RequestFutureImpl*> recv_queue_;
 
 public:
     Client(const std::string& host, int port, size_t buffer_size = 64 * 1024) : recv_buffer_(buffer_size) {
@@ -815,7 +817,7 @@ public:
     }
 
     RequestFuturePtr ScheduleRecv(std::string dest) {
-        RequestFuturePtr future = std::make_unique<RequestFuture>(this);
+        RequestFuturePtr future = std::make_unique<RequestFutureImpl>(this);
         future->response = std::move(dest);
         recv_queue_.push_back(future.get());
         return future;
@@ -990,39 +992,35 @@ public:
                 recv_buffer_.Reserve(num_recv);
 
                 // Deliver responses to Futures
-                trace_event = common::Tracer::Begin("Deliver responses");
+                FNET_TRACE_SCOPE("Deliver responses");
                 while (recv_queue_.size()) {
-                    char* reserved = recv_buffer_.GetReservedStart();
-                    size_t reserved_size = recv_buffer_.GetNumReserved();
+                    char* received = recv_buffer_.GetReservedStart();
+                    size_t received_size = recv_buffer_.GetNumReserved();
 
                     if (!header_is_parsed_) {
-                        auto trace_event = common::Tracer::Begin("header_is_parsed_");
-                        if (reserved_size >= sizeof(Header)) {
-                            Header& header = *((Header*) reserved);
-                            auto trace_event2 = common::Tracer::Begin("string::resize(%lld)", header.payload_size);
+                        if (received_size >= sizeof(Header)) {
+                            Header& header = *((Header*) received);
+                            auto trace_event_resize = common::Tracer::Begin("string::resize(%lld)", header.payload_size);
                             recv_queue_[0]->response.resize(header.payload_size);
-                            common::Tracer::End(trace_event2);
+                            common::Tracer::End(trace_event_resize);
                             header_is_parsed_ = true;
                             recv_buffer_.Release(sizeof(Header));
-                            common::Tracer::End(trace_event);
                             continue;
                         } else {
-                            common::Tracer::End(trace_event);
                             break;
                         }
-                        common::Tracer::End(trace_event);
                     }
 
                     size_t remains_in_payload = recv_queue_[0]->response.size() - recv_in_payload_;
 
-                    if (reserved_size == 0 && remains_in_payload) {
+                    if (received_size == 0 && remains_in_payload) {
                         break;
                     }
 
-                    size_t num_to_copy = std::min(remains_in_payload, reserved_size);
-                    auto trace_event = common::Tracer::Begin("memcpy");
-                    std::memcpy(recv_queue_[0]->response.data() + recv_in_payload_, reserved, num_to_copy);
-                    common::Tracer::End(trace_event);
+                    size_t num_to_copy = std::min(remains_in_payload, received_size);
+                    auto trace_event_memcpy = common::Tracer::Begin("memcpy");
+                    std::memcpy(recv_queue_[0]->response.data() + recv_in_payload_, received, num_to_copy);
+                    common::Tracer::End(trace_event_memcpy);
                     recv_buffer_.Release(num_to_copy);
                     recv_in_payload_ += num_to_copy;
 
@@ -1033,13 +1031,12 @@ public:
                         recv_in_payload_ = 0;
                     }
                 }
-                common::Tracer::End(trace_event);
             }
         }
     }
 };
 
-void RequestFuture::Wait() {
+void RequestFutureImpl::Wait() {
     while (!is_finished) {
         auto tev = common::Tracer::Begin("client->DoIoCycle");
         client->DoIoCycle();
