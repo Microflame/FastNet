@@ -645,6 +645,8 @@ public:
             client.Close();
         };
 
+        std::cout << "Server started on " << conf_.host << ':' << conf_.port << '\n';
+
         while (is_running_) {
             int num_epoll_events = 0;
             {
