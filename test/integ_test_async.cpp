@@ -8,6 +8,7 @@
 
 size_t KB = 1024;
 size_t MB = 1024 * KB;
+size_t GB = 1024 * MB;
 
 static bool IS_RUNNING = true;
 static size_t QUEUE_SIZE = 10;
@@ -76,40 +77,49 @@ int main(int argc, char* argv[]) {
 
     std::string res;
     std::vector<char> buffer(16 * 1024 * 1024);
-    std::vector<fnet::RequestFuturePtr> reqs(QUEUE_SIZE);
+    std::vector<fnet::Request> reqs(QUEUE_SIZE);
     std::vector<std::string> reqs_contents(QUEUE_SIZE);
-    std::vector<std::string> response_buffers(reqs.size());
-    size_t req_idx = 0;
 
     for (const RequestsDescr& rd: descrs) {
         std::uniform_int_distribution<size_t> uni(rd.min_length, rd.max_length);
         std::cout << "Running " << rd.count << " tests of size " << rd.min_length << " to " << rd.max_length << "\n";
-        auto start = std::chrono::high_resolution_clock::now();
 
+        double start_s = common::TimeS();
+        size_t req_idx = 0;
+        size_t bytes_sent = 0;
+
+        {
+        common::ProgressBar pb;
         for (size_t i = 0; i < rd.count; ++i) {
             size_t size = uni(rng);
             size_t wrapped_idx = req_idx % reqs.size();
 
             if (req_idx >= reqs.size()) {
-                std::string res = reqs[wrapped_idx]->GetResult();
+                std::string res = client.GetResult(reqs[wrapped_idx]);
                 FNET_ASSERT(res.size() == reqs_contents[wrapped_idx].size());
                 FNET_ASSERT(memcmp(res.data(), reqs_contents[wrapped_idx].data(), res.size()) == 0);
-                response_buffers[wrapped_idx] = std::move(res);
+                client.ReturnRequestBuffer(std::move(res));
             }
             FillRandomRequest(reqs_contents[wrapped_idx], size);
-            reqs[wrapped_idx] = client.ScheduleRequest(reqs_contents[wrapped_idx], std::move(response_buffers[wrapped_idx]));
+            reqs[wrapped_idx] = client.ScheduleRequest(reqs_contents[wrapped_idx]);
+            bytes_sent += size;
             req_idx += 1;
 
+            pb.Draw((i + 1) / float(rd.count));
+
             if (!IS_RUNNING) {
-                goto END;
+                IS_RUNNING = true;
+                break;
             }
         }
+        }
 
-        auto end = std::chrono::high_resolution_clock::now();
-        auto delta_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-        double rps = double(rd.count) / delta_us * 1'000'000;
+        double end_s = common::TimeS();
+        double delta_s = end_s - start_s;
+        double rps = rd.count / delta_s;
+        std::cout << "\tSent: " << req_idx << " requests\n";
         std::cout << "\tRPS: " << rps << "\n";
+        std::cout << "\tRound Trip Throughput: " << (bytes_sent / delta_s / GB) << " GB/s\n\n";
     }
-END:
     return 0;
 }

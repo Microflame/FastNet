@@ -43,29 +43,29 @@ int main(int argc, char* argv[]) {
     std::string s9 = "Request 9 data";
     std::string s10 = "Request 10 data";
 
-    fnet::RequestFuturePtr r1 = client.ScheduleRequest(s1);
-    fnet::RequestFuturePtr r2 = client.ScheduleRequest(s2);
-    fnet::RequestFuturePtr r3 = client.ScheduleRequest(s3);
-    fnet::RequestFuturePtr r4 = client.ScheduleRequest(s4);
-    fnet::RequestFuturePtr r5 = client.ScheduleRequest(s5);
-    fnet::RequestFuturePtr r6 = client.ScheduleRequest(s6);
-    fnet::RequestFuturePtr r7 = client.ScheduleRequest(s7);
-    fnet::RequestFuturePtr r8 = client.ScheduleRequest(s8);
-    fnet::RequestFuturePtr r9 = client.ScheduleRequest(s9);
-    fnet::RequestFuturePtr r10 = client.ScheduleRequest(s10);
+    fnet::Request r1 = client.ScheduleRequest(s1);
+    fnet::Request r2 = client.ScheduleRequest(s2);
+    fnet::Request r3 = client.ScheduleRequest(s3);
+    fnet::Request r4 = client.ScheduleRequest(s4);
+    fnet::Request r5 = client.ScheduleRequest(s5);
+    fnet::Request r6 = client.ScheduleRequest(s6);
+    fnet::Request r7 = client.ScheduleRequest(s7);
+    fnet::Request r8 = client.ScheduleRequest(s8);
+    fnet::Request r9 = client.ScheduleRequest(s9);
+    fnet::Request r10 = client.ScheduleRequest(s10);
 
-    r10->Wait();
+    client.WaitAll();
 
-    std::cout << "r1: " << r1->GetResult() << '\n'; 
-    std::cout << "r2: " << r2->GetResult() << '\n'; 
-    std::cout << "r3: " << r3->GetResult() << '\n'; 
-    std::cout << "r4: " << r4->GetResult() << '\n'; 
-    std::cout << "r5: " << r5->GetResult() << '\n'; 
-    std::cout << "r6: " << r6->GetResult() << '\n'; 
-    std::cout << "r7: " << r7->GetResult() << '\n'; 
-    std::cout << "r8: " << r8->GetResult() << '\n'; 
-    std::cout << "r9: " << r9->GetResult() << '\n'; 
-    std::cout << "r10: " << r10->GetResult() << '\n'; 
+    std::cout << "r1: " << client.GetResult(r1) << '\n'; 
+    std::cout << "r2: " << client.GetResult(r2) << '\n'; 
+    std::cout << "r3: " << client.GetResult(r3) << '\n'; 
+    std::cout << "r4: " << client.GetResult(r4) << '\n'; 
+    std::cout << "r5: " << client.GetResult(r5) << '\n'; 
+    std::cout << "r6: " << client.GetResult(r6) << '\n'; 
+    std::cout << "r7: " << client.GetResult(r7) << '\n'; 
+    std::cout << "r8: " << client.GetResult(r8) << '\n'; 
+    std::cout << "r9: " << client.GetResult(r9) << '\n'; 
+    std::cout << "r10: " << client.GetResult(r10) << '\n'; 
 
 
     // std::random_device rd;

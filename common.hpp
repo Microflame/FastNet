@@ -138,4 +138,38 @@ private:
 
 bool Tracer::INITIALIZED = false;
 
+struct ProgressBar {
+    int width = 80;
+    double update_ms = 15;
+
+    double next_update_ms_ = 0;
+    float final_progress_ = 0;
+
+    ~ProgressBar() {
+        Draw(final_progress_, true);
+        std::cout << '\n';
+    }
+
+    void Draw(float progress, bool ignore_time = false) {
+        final_progress_ = progress;
+        double time = common::TimeMs();
+        if (time < next_update_ms_ && !ignore_time) {
+            return;
+        }
+        next_update_ms_ = time + update_ms;
+
+        std::cout << '[';
+        int count = width * progress + 0.5;
+        for (int i = 0; i < width; ++i) {
+            char ch = 0;
+            if (i <= count) { ch = '='; }
+            else if (i == count + 1) { ch = '>'; }
+            else { ch = ' '; }
+            std::cout << ch; 
+        }
+        std::cout << "] " << int(100 * progress) << " %\r";
+        std::cout.flush();
+    }
+};
+
 } // namespace common

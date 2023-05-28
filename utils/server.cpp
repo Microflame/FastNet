@@ -29,6 +29,7 @@ int main(int argc, char* argv[]) {
         .host = "localhost",
         .port = port,
         .max_num_clients = 4,
+        .client_recv_buffer_size = 16 * 1024 * 1024,
         .reuse_addr = true,
     });
     SERVER = &server;

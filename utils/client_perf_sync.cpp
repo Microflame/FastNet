@@ -44,10 +44,9 @@ int main(int argc, char* argv[]) {
     size_t bytes_sent = 0;
     while (IS_RUNNING) {
         size_t size = uni(rng);
-        // client.DoSyncRequest({buffer.data(), size}, res);
-        res = client.DoRequest({buffer.data(), size}, std::move(res));
-
-
+        // client.DoSyncRequest({buffer.data(), size});
+        res = client.DoRequest({buffer.data(), size});
+        client.ReturnRequestBuffer(std::move(res));
         auto cur_time = std::chrono::high_resolution_clock::now();
 
         bytes_sent += size;

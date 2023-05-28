@@ -48,8 +48,7 @@ int main(int argc, char* argv[]) {
     size_t num_requests = 0;
     size_t bytes_sent = 0;
 
-    std::vector<fnet::RequestFuturePtr> reqs(3);
-    std::vector<std::string> response_buffers(reqs.size());
+    std::vector<fnet::Request> reqs(3);
     size_t req_idx = 0;
     while (IS_RUNNING) {
         size_t size = uni(rng);
@@ -57,11 +56,11 @@ int main(int argc, char* argv[]) {
 
         if (req_idx >= reqs.size()) {
             auto begin = common::Tracer::Begin("Client/GetResults");
-            std::string res = reqs[wrapped_idx]->GetResult();
-            response_buffers[wrapped_idx] = std::move(res);
+            std::string res = client.GetResult(reqs[wrapped_idx]);
+            client.ReturnRequestBuffer(std::move(res));
             common::Tracer::End(begin);
         }
-        reqs[wrapped_idx] = client.ScheduleRequest({buffer.data(), size}, std::move(response_buffers[wrapped_idx]));
+        reqs[wrapped_idx] = client.ScheduleRequest({buffer.data(), size});
         req_idx += 1;
 
 

@@ -239,11 +239,11 @@ struct ObjectPool {
     std::vector<T> available_;
 
     T Claim() {
-        return Claim([]() -> T { return {}; })
+        return Claim([]() -> T { return {}; });
     }
 
     template <typename F>
-    T Claim(F& factory) {
+    T Claim(const F& factory) {
         if (available_.size() == 0) {
             return factory();
         }
@@ -547,7 +547,7 @@ public:
             handler({message_body.data(), message_body.size()}, response);
 
             Header h = MakeHeader(response.size());
-            send_queue_.emplace_back(h, std::move(response), string_pool_);
+            send_queue_.emplace_back(h, std::move(response));
 
             common::Tracer::End(trace_event_schedule_msg);
 
@@ -592,6 +592,7 @@ struct ServerConfig {
     std::string host;
     int port = -1;
     size_t max_num_clients = 128;
+    // TODO: check that incoming message does not exceed this number
     size_t client_recv_buffer_size = 16 * 1024;
     bool reuse_addr = false;
 };
@@ -675,7 +676,7 @@ public:
                         client_id = free_connections.back();
                         free_connections.pop_back();
                     }
-                    FNET_ASSERT(client_id != -1);
+                    FNET_ASSERT(client_id != size_t(-1));
                     
                     client_connections[client_id].Reset(client_fd, epoll_fd, client_id);
                     
@@ -751,6 +752,13 @@ struct Request {
         data_ = std::make_shared<Data>();
         data_->result = std::move(buffer);
     }
+
+    Request() = default;
+    Request(const Request& other) = default;
+    Request(Request&& other) = default;
+    ~Request() = default;
+    Request& operator=(const Request& other) = default;
+    Request& operator=(Request&& other) = default;
 };
 
 struct HeaderSpan {
