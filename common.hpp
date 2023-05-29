@@ -23,10 +23,14 @@ inline TimePoint GetTimePoint() {
     return Clock::now();
 }
 
-inline double TimeUs() {
+inline double TimeNs() {
     TimePoint now = GetTimePoint();
-    double time_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    return time_us;
+    double time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    return time_ns;
+}
+
+inline double TimeUs() {
+    return TimeNs() / 1'000;;
 }
 
 inline double TimeMs() {
@@ -34,7 +38,7 @@ inline double TimeMs() {
 }
 
 inline double TimeS() {
-    return TimeUs() / 1'000'000;
+    return TimeMs() / 1'000;
 }
 
 struct TraceEvent {
@@ -104,7 +108,7 @@ private:
         name_buffer_offset_ += name_len; // TODO: Not sure about -1
         ev.name_end = name_buffer_offset_;
 
-        ev.time_point = TimeUs();
+        ev.time_point = TimeNs();
         ev.type = TraceEvent::BEGIN;
         return ev_id;
     }
@@ -112,7 +116,7 @@ private:
     void EndImpl(size_t ev_id) {
         events_.push_back(events_[ev_id]);
         TraceEvent& ev = events_.back();
-        ev.time_point = TimeUs();
+        ev.time_point = TimeNs();
         ev.type = TraceEvent::END;
     }
 
@@ -129,7 +133,7 @@ private:
             ss << "\", \"ph\": \"" << (ev.type == TraceEvent::BEGIN ? 'B' : 'E');
             ss << "\", \"pid\": 0, \"tid\": 0, \"ts\": ";
             ss << ev.time_point;
-            ss << "}";
+            ss << ", \"displayTimeUnit\": \"ns\"}";
         }
         ss << "]";
         return ss.str();
@@ -140,7 +144,7 @@ bool Tracer::INITIALIZED = false;
 
 struct ProgressBar {
     int width = 80;
-    double update_ms = 15;
+    double update_ms = 30;
 
     double next_update_ms_ = 0;
     float final_progress_ = 0;

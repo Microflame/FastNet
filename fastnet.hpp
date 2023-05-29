@@ -89,8 +89,8 @@ void DbgSend(size_t size) {
 #endif
 
 // TODO: Check if this works
-#define FNET_TRACE_SCOPE(name) \
-    size_t FNET_CONCAT(FNET_trace_scope_, __LINE__) = common::Tracer::Begin(name); \
+#define FNET_TRACE_SCOPE(name, ...)                                                                 \
+    size_t FNET_CONCAT(FNET_trace_scope_, __LINE__) = common::Tracer::Begin(name, ## __VA_ARGS__);  \
     FNET_DEFER { common::Tracer::End(FNET_CONCAT(FNET_trace_scope_, __LINE__)); }
 
 
@@ -967,7 +967,7 @@ public:
                 char* avail = recv_buffer_.GetFreeStart();
                 size_t num_avail = recv_buffer_.GetNumFree();
 
-                auto trace_event = common::Tracer::Begin("recv");
+                auto trace_event = common::Tracer::Begin("recv small");
                 int num_recv = recv(server_socket_fd_, avail, num_avail, MSG_NOSIGNAL | MSG_DONTWAIT);
                 common::Tracer::End(trace_event);
 
@@ -978,7 +978,10 @@ public:
                 }
                 FNET_THROW_IF_POSIX_ERR(num_recv);
 
-                recv_buffer_.Reserve(num_recv);
+                {
+                    FNET_TRACE_SCOPE("RingBuffer::Reserve(%d)", num_recv);
+                    recv_buffer_.Reserve(num_recv);
+                }
 
                 // Deliver responses to Futures
                 FNET_TRACE_SCOPE("Deliver responses");
@@ -989,9 +992,10 @@ public:
                     if (!header_is_parsed_) {
                         if (received_size >= sizeof(Header)) {
                             Header& header = *((Header*) received);
-                            auto trace_event_resize = common::Tracer::Begin("string::resize(%lld)", header.payload_size);
-                            recv_queue_[0].data_->result.resize(header.payload_size);
-                            common::Tracer::End(trace_event_resize);
+                            {
+                                FNET_TRACE_SCOPE("string::resize(%lld)", header.payload_size);
+                                recv_queue_[0].data_->result.resize(header.payload_size);
+                            }
                             header_is_parsed_ = true;
                             recv_buffer_.Release(sizeof(Header));
                             continue;
@@ -1007,9 +1011,10 @@ public:
                     }
 
                     size_t num_to_copy = std::min(remains_in_payload, received_size);
-                    auto trace_event_memcpy = common::Tracer::Begin("memcpy");
-                    std::memcpy(recv_queue_[0].data_->result.data() + recv_in_payload_, received, num_to_copy);
-                    common::Tracer::End(trace_event_memcpy);
+                    {
+                        FNET_TRACE_SCOPE("memcpy");
+                        std::memcpy(recv_queue_[0].data_->result.data() + recv_in_payload_, received, num_to_copy);
+                    }
                     recv_buffer_.Release(num_to_copy);
                     recv_in_payload_ += num_to_copy;
 

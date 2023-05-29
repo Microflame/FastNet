@@ -8,7 +8,7 @@
 size_t KB = 1024;
 size_t MB = 1024 * KB;
 
-#if 1
+#if 0
 size_t MIN_REQ_SIZE = 256;
 #else
 size_t MIN_REQ_SIZE = 512 * KB;

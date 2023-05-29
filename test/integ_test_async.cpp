@@ -80,9 +80,15 @@ int main(int argc, char* argv[]) {
     std::vector<fnet::Request> reqs(QUEUE_SIZE);
     std::vector<std::string> reqs_contents(QUEUE_SIZE);
 
+    std::cout << "Async queue size: " << QUEUE_SIZE << '\n';
+
+    std::cout << "NOTE: During these tests we are always checking that "
+                 "response matches with request via memcmp().\n"
+                 "This will result in pessimized performance numbers.\n\n";
+
     for (const RequestsDescr& rd: descrs) {
         std::uniform_int_distribution<size_t> uni(rd.min_length, rd.max_length);
-        std::cout << "Running " << rd.count << " tests of size " << rd.min_length << " to " << rd.max_length << "\n";
+        std::cout << "Running " << rd.count << " tests of size ranging from " << rd.min_length << " to " << rd.max_length << " bytes\n";
 
         double start_s = common::TimeS();
         size_t req_idx = 0;
