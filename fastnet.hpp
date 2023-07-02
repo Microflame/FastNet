@@ -1,4 +1,4 @@
-#include <span>
+#include <span> // TODO: Remove
 #include <string_view>
 #include <stdexcept>
 #include <cstring>
@@ -21,7 +21,7 @@
 #include <sys/epoll.h>
 #include <sys/mman.h>
 
-#include "common.hpp"
+#include "common.hpp" // TODO: Hide this under FNET_DEVEL_BUILD macro
 
 
 // #define FNET_DEBUG 1
@@ -38,7 +38,7 @@ namespace fnet {
     do {                                                                \
         std::string location = __FILE__":"                              \
                                FNET_STRINGIZE(__LINE__) ": ";           \
-        throw std::runtime_error(location + err);                       \
+        throw std::runtime_error(location + (err));                     \
     } while (0)
 
 std::string ErrnoToString(int);
@@ -60,6 +60,7 @@ template <typename F>
 struct DeferImpl;
 #define FNET_DEFER ::fnet::DeferImpl FNET_CONCAT(defer_, __LINE__) = [&]()
 
+// TODO: Use logging instead of this
 #ifdef FNET_DEBUG
 
 void DbgRecv(size_t size) {
@@ -100,10 +101,11 @@ static const size_t PAGE_SIZE = getpagesize();
 template <typename F> 
 struct DeferImpl {
     DeferImpl(F f): fn(f) {}
-    ~DeferImpl() { fn(); }
+    ~DeferImpl() { fn(); } // TODO: Mark this noexcept(false)?
     F fn;
 };
 
+// TODO: Make it a struct
 class Span {
 public:
     Span() {}
@@ -123,6 +125,7 @@ public:
         size_ = str.size();
     }
 
+    // TODO: Remove
     Span(std::span<char>& str) {
         data_ = str.data();
         size_ = str.size();
@@ -142,6 +145,8 @@ private:
     size_t size_ = 0;
 };
 
+// TODO: Make it a struct
+// TODO: Come out with sane method names
 class RingBuffer {
 public:
     RingBuffer() {}
@@ -152,6 +157,7 @@ public:
 
         int fd = memfd_create("RingBuffer", 0);
         FNET_THROW_IF_POSIX_ERR(fd);
+        FNET_DEFER { close(fd); };
         FNET_THROW_IF_POSIX_ERR(ftruncate(fd, buffer_size_));
 
         buffer_ = (char*) mmap(nullptr, 2 * buffer_size_, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
@@ -159,8 +165,6 @@ public:
 
         FNET_THROW_IF_POSIX_ERR(mmap(buffer_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
         FNET_THROW_IF_POSIX_ERR(mmap(buffer_ + buffer_size_, buffer_size_, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED, fd, 0));
-
-        FNET_THROW_IF_POSIX_ERR(close(fd));
     }
 
     RingBuffer(const RingBuffer&) = delete;
@@ -234,6 +238,7 @@ private:
     char* buffer_ = nullptr;
 };
 
+// TODO: Add return counters in devel mode
 template <typename T>
 struct ObjectPool {
     std::vector<T> available_;
@@ -260,11 +265,11 @@ struct ObjectPool {
 
 
 std::string ErrnoToString(int errnum) {
-    char ERROR_BUFFER[1024] = {};
-    ERROR_BUFFER[0] = 0;
+    char ERROR_BUFFER[1024] = {}; // TODO: What is the correct size?
+    ERROR_BUFFER[0] = 0; // TODO: This must be unnecessary
     const char* err_str = strerror_r(errnum, ERROR_BUFFER, sizeof(ERROR_BUFFER));
 
-    return {err_str};
+    return { err_str };
 }
 
 int SetFileFlag(int fd, int flag) {
@@ -304,7 +309,7 @@ in_addr_t ResolveHostname(const char* hostname) {
     FNET_ASSERT(getaddrinfo_res);
     FNET_ASSERT(getaddrinfo_res->ai_addr);
     in_addr_t res = {};
-    inet_pton(AF_INET, getaddrinfo_res->ai_addr->sa_data, &res);
+    FNET_THROW_IF_POSIX_ERR(inet_pton(AF_INET, getaddrinfo_res->ai_addr->sa_data, &res));
     return res;
 }
 
@@ -321,6 +326,7 @@ sockaddr_in MakeSockaddr(const char* hostname, int port) {
  * |      MESSAGE       |
  * | HEADER |  PAYLOAD  |
 */
+// TODO: Make size 16 for better alignment?
 struct Header {
     uint8_t version;
     uint8_t reserved_1_;
@@ -351,6 +357,7 @@ struct SockResult {
     operator bool() const { return error == OK; }
 };
 
+// TODO: Remove?
 SockResult SendMessage(int fd, const Span& payload) {
     Header header = MakeHeader(payload.size());
     
@@ -380,6 +387,7 @@ SockResult SendMessage(int fd, const Span& payload) {
     return {num_send_total, SockResult::OK};
 }
 
+// TODO: Remove?
 SockResult RecvFixed(int fd, char* data, size_t size) {
     size_t num_recv_total = 0;
 
@@ -406,8 +414,10 @@ struct OutgoingMessage {
 
 using HandleFn = std::function<void(std::string_view, std::string&)>;
 
+// TODO: Make it a struct
 class ClientConnection {
 public:
+    // TODO: Make superclasses for all of this
     ClientConnection() = delete;
     ClientConnection(const ClientConnection& other) = delete;
     ClientConnection& operator=(const ClientConnection& other) = delete;
@@ -415,7 +425,7 @@ public:
     ClientConnection(size_t buffer_size) : buffer_(buffer_size) {}
 
     // TODO: Fix this code duplication.
-    // There is not real need in move ctors
+    // There is no real need for move ctors since we'll use fixed array of conns
     ClientConnection(ClientConnection&& other) {
         fd_ = other.fd_;
         other.fd_ = -1;
@@ -428,6 +438,7 @@ public:
         Close();
     }
 
+    // TODO: Remove
     ClientConnection& operator=(ClientConnection&& other) {
         Close();
         fd_ = other.fd_;
@@ -442,10 +453,12 @@ public:
 
     SockResult Recv() {
         FNET_TRACE_SCOPE("ClientConnection::Recv()");
+
         size_t num_read_total = 0;
         while (buffer_.GetNumFree()) {
             int recv_res = 0;
             {
+                // TODO: Add and use FNET_TRACE_BLOCK macro
                 FNET_TRACE_SCOPE("recv");
                 recv_res = recv(fd_, buffer_.GetFreeStart(), buffer_.GetNumFree(), 0);
             }
@@ -466,10 +479,12 @@ public:
 
     SockResult Send() {
         FNET_TRACE_SCOPE("ClientConnection::Send()");
+
         if (send_queue_.size() == 0) {
             return {0, SockResult::OK};
         }
 
+        // TODO: Do not rebuild iovecs on every call (?)
         auto trace_event_build_iovecs = common::Tracer::Begin("Send:BuildIovecs");
         size_t num_sent_during_call = 0;
         std::vector<iovec> iovecs(2 * send_queue_.size());
@@ -502,10 +517,12 @@ public:
             if (num_sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 break;
             }
-            FNET_THROW_IF_POSIX_ERR(num_sent);
+            FNET_THROW_IF_POSIX_ERR(num_sent); // TODO: Just close if error
             if (num_sent == -1) {
                 return {num_sent_during_call, SockResult::BROKEN};
             }
+
+            // TODO: Fix invariants for num_sent, sent_in_message_, num_iovecs_sent
             num_sent_during_call += num_sent;
             sent_in_message_ += num_sent;
 
@@ -529,9 +546,12 @@ public:
         return {num_sent_during_call, SockResult::OK};
     }
 
+    // TODO: Proper naming
+    // TODO: Having this logic here is questionable
     void ProcessIncomingTraffic(const HandleFn& handler) {
         FNET_TRACE_SCOPE("ClientConnection::ProcessIncomingTraffic()");
-        Span data = GetUsedBuffer();
+
+        Span data = GetUsedBuffer(); // TODO: Naming
         size_t num_bytes_processed = 0;
         while (data.size() >= sizeof(Header)) {
             Header& header = *( (Header*) data.data() );
@@ -542,13 +562,13 @@ public:
 
             FNET_DBG_RECV(header.payload_size);
             Span message_body = data.subspan(sizeof(Header), header.payload_size);
+
             auto trace_event_schedule_msg = common::Tracer::Begin("Schedule message");
             std::string response = string_pool_.Claim();
             handler({message_body.data(), message_body.size()}, response);
 
             Header h = MakeHeader(response.size());
             send_queue_.emplace_back(h, std::move(response));
-
             common::Tracer::End(trace_event_schedule_msg);
 
             data = data.subspan(full_size);
@@ -558,10 +578,12 @@ public:
         buffer_.Release(num_bytes_processed);
     }
 
+    // TODO: Remove
     Span GetUsedBuffer() {
         return { buffer_.GetReservedStart(), buffer_.GetNumReserved() };
     }
 
+    // TODO: Close vs Reset?
     void Close() {
         if (fd_ != -1) {
             FNET_THROW_IF_POSIX_ERR(close(fd_));
@@ -597,6 +619,7 @@ struct ServerConfig {
     bool reuse_addr = false;
 };
 
+// TODO: Make it a struct
 class Server {
     ServerConfig conf_;
     bool is_running_ = true;
@@ -633,19 +656,20 @@ public:
 
         FNET_THROW_IF_POSIX_ERR(AddEpollEvent(epoll_fd, server_socked_fd, EPOLLIN, -1));
 
-        constexpr size_t MAX_NUM_EPOLL_EVENTS = 64;
+        constexpr size_t MAX_NUM_EPOLL_EVENTS = 64; // TODO: What is the right amount?
         struct epoll_event epoll_events[MAX_NUM_EPOLL_EVENTS] = {};
 
-        std::vector<ClientConnection> client_connections;
+        std::vector<ClientConnection> client_connections; // TODO: Make it fixed size
         std::vector<size_t> free_connections;
 
+        // TODO: Naming
         auto close_client_now = [epoll_fd, &free_connections](ClientConnection& client, size_t client_id) {
             FNET_THROW_IF_POSIX_ERR(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client.Fd(), nullptr));
             free_connections.push_back(client_id);
             client.Close();
         };
 
-        std::cout << "Server started on " << conf_.host << ':' << conf_.port << '\n';
+        std::cout << "Server started on " << conf_.host << ':' << conf_.port << '\n'; // TODO: Use logging
 
         while (is_running_) {
             int num_epoll_events = 0;
@@ -657,7 +681,7 @@ public:
             }
 
             for (int i = 0; i < num_epoll_events; i++) {
-                struct epoll_event& ev = epoll_events[i];
+                epoll_event& ev = epoll_events[i];
 
                 if (ev.data.u64 == uint64_t(-1)) {
                     FNET_TRACE_SCOPE("Accept");
