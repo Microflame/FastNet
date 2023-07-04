@@ -404,7 +404,7 @@ SockResult RecvFixed(int fd, char* data, size_t size) {
 
 struct OutgoingMessage {
     Header header;
-    std::string message;
+    std::string message; // TODO: Use something without 0-init
 
     OutgoingMessage(Header header, std::string message)
     : header(header),
@@ -412,7 +412,7 @@ struct OutgoingMessage {
     {}
 };
 
-using HandleFn = std::function<void(std::string_view, std::string&)>;
+using HandleFn = std::function<void(std::string_view, std::string&)>; // TODO: Use something without 0-init
 
 // TODO: Make it a struct
 class ClientConnection {
@@ -606,7 +606,7 @@ private:
     RingBuffer buffer_;
     std::deque<OutgoingMessage> send_queue_;
     size_t sent_in_message_ = 0;
-    ObjectPool<std::string> string_pool_;
+    ObjectPool<std::string> string_pool_; // TODO: Use something without 0-init
 };
 
 
@@ -692,17 +692,17 @@ public:
                     if (free_connections.size() == 0) {
                         if (client_connections.size() == conf_.max_num_clients) {
                             FNET_THROW_IF_POSIX_ERR(close(client_fd));
-                            fprintf(stderr, "Client rejected.");
+                            fprintf(stderr, "Client rejected."); // TODO: Logging
                             continue;
                         }
 
-                        client_id = client_connections.size();
+                        client_id = client_connections.size(); // TODO: Shall not be required
                         client_connections.emplace_back(conf_.client_recv_buffer_size);
                     } else {
                         client_id = free_connections.back();
                         free_connections.pop_back();
                     }
-                    FNET_ASSERT(client_id != size_t(-1));
+                    FNET_ASSERT(client_id != size_t(-1)); // TODO: Remove
                     
                     client_connections[client_id].Reset(client_fd, epoll_fd, client_id);
                     
@@ -712,17 +712,17 @@ public:
                     continue;
                 }
 
-                size_t client_id = ev.data.u64;
+                size_t client_id = ev.data.u64; // TODO: Naming: this is an index, not an id. Maybe also add a 'unique' ID for debugging?
+                                                // Like 16 bit for index + 48 bit for ID
                 ClientConnection& client = client_connections[client_id];
 
-                
                 if (ev.events & (EPOLLHUP | EPOLLERR)) {
                     FNET_TRACE_SCOPE("EPOLLHUP | EPOLLERR");
                     close_client_now(client, client_id);
                     continue;
                 }
 
-                bool had_pending_out = client.GetSendQueueSize();
+                bool had_pending_out = client.GetSendQueueSize(); // TODO: Naming
                 if (ev.events & EPOLLIN) {
                     FNET_TRACE_SCOPE("EPOLLIN");
                     SockResult res = client.Recv();
@@ -735,6 +735,10 @@ public:
                 }
                 bool writes_appeared = !had_pending_out && client.GetSendQueueSize();
 
+                // TODO: This part is weird in general.
+                // Figure out when we want to Send.
+                // Maybe just request EPOLLOUT when there are pending OutgoingMessages
+                // and Send only when there is EPOLLOUT event
                 if (writes_appeared || (ev.events & EPOLLOUT)) {
                     SockResult res = client.Send();
                     if (res.error == SockResult::BROKEN) {
@@ -748,13 +752,15 @@ public:
                     continue;
                 }
 
-                FNET_TRACE_SCOPE("ModEpollEvents");
-                int event_mask = EPOLLIN | EPOLLRDHUP | EPOLLHUP;
-                if (client.GetSendQueueSize()) {
-                    event_mask |= EPOLLOUT;
-                }
+                {
+                    FNET_TRACE_SCOPE("ModEpollEvents");
+                    int event_mask = EPOLLIN | EPOLLRDHUP | EPOLLHUP; // TODO: Do we need to sub for EPOLLRDHUP and EPOLLHUP?
+                    if (client.GetSendQueueSize()) {
+                        event_mask |= EPOLLOUT;
+                    }
 
-                FNET_THROW_IF_POSIX_ERR(ModEpollEvent(epoll_fd, client.Fd(), event_mask, client_id));
+                    FNET_THROW_IF_POSIX_ERR(ModEpollEvent(epoll_fd, client.Fd(), event_mask, client_id));
+                }
             }
         }
     }
@@ -766,10 +772,12 @@ void RunServer(ServerConfig conf, HandleFn handle) {
 
 class Client;
 
+// TODO: Can be in the following states:
+// Sending, Sent, Received, Error
 struct Request {
     struct Data {
         bool is_finished = false;
-        std::string result = {};
+        std::string result = {}; // TODO: Use something without 0-init
     };
 
     std::shared_ptr<Data> data_;
@@ -787,6 +795,7 @@ struct Request {
     Request& operator=(Request&& other) = default;
 };
 
+// TODO: Better own requests.
 struct HeaderSpan {
     Header header;
     Span span;
@@ -844,6 +853,10 @@ public:
         header_is_parsed_ = false;
     }
 
+    // TODO: This way we can not move data into here.
+    // Accept string by value/lvalue
+    // Push header and string into ring buffers
+    // Once sent, move string into response data
     Request ScheduleRequest(Span request_bytes) {
         send_queue_.push_back({MakeHeader(request_bytes.size()), request_bytes});
 
@@ -866,6 +879,7 @@ public:
         }
     }
 
+    // TODO: Remove
     void ReturnRequestBuffer(std::string buffer) {
         string_pool_.Return(std::move(buffer));
     }
@@ -877,6 +891,7 @@ public:
         return GetResult(request);
     }
 
+    // TODO: Remove
     void DoSyncRequest(Span request, std::string& dest) {
         FNET_ASSERT(server_socket_fd_ != -1);
 
