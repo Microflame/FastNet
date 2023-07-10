@@ -142,6 +142,7 @@ private:
 
 bool Tracer::INITIALIZED = false;
 
+// TODO: Check that std::cout leads to stdout and not redirected to other fd
 struct ProgressBar {
     int width = 80;
     double update_ms = 30;
